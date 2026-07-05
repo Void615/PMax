@@ -1,0 +1,42 @@
+# TypeScript / Node
+node_modules/
+*.tsbuildinfo
+
+# Build output
+dist/
+build/
+
+# AI agent workspace
+.trae/
+.claude/
+CLAUDE.md
+
+# Editor
+.vscode
+.DS_Store
+
+# Environment
+*.env
+.env
+.envrc
+
+# Logs
+*.log
+
+# Redis dump files
+*.rdb
+*.aof
+*.pid
+
+# Exception: runtime design docs
+!docs/runtime_design/
+
+# Exception: frontend
+!frontend/lib/
+!frontend/components/report/
+
+# Project docs (internal)
+Technical Design Document.md
+Git 协作约定.md
+Official Documentation.md
+report/
