@@ -1,0 +1,11 @@
+{
+  "name": "feature_extractor",
+  "description": "从产品功能描述文本中提取结构化功能点",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string", "description": "功能描述文本" }
+    },
+    "required": ["text"]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "table_composer",
+  "description": "将对比矩阵数据渲染为 Markdown 表格",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "description": "表格标题" },
+      "targets": { "type": "array", "items": { "type": "string" } },
+      "rows": { "type": "string", "description": "行数据的 JSON 字符串" }
+    },
+    "required": ["title", "targets", "rows"]
+  }
+}

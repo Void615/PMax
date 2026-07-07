@@ -1,0 +1,12 @@
+{
+  "name": "markdown_renderer",
+  "description": "将结构化数据渲染为格式化的 Markdown 文档",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "description": "文档标题" },
+      "sections": { "type": "string", "description": "章节数组 JSON" }
+    },
+    "required": ["title", "sections"]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "web_scrape",
+  "description": "抓取并清洗指定 URL 的网页内容",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "目标网页 URL" },
+      "maxChars": { "type": "number", "description": "最大返回字符数，默认 5000" }
+    },
+    "required": ["url"]
+  }
+}

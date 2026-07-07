@@ -1,0 +1,12 @@
+{
+  "name": "web_search",
+  "description": "通用网页搜索，返回搜索结果列表",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "搜索关键词" },
+      "maxResults": { "type": "number", "description": "最大结果数，默认 5" }
+    },
+    "required": ["query"]
+  }
+}
