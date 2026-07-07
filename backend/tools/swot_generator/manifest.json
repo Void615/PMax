@@ -1,0 +1,12 @@
+{
+  "name": "swot_generator",
+  "description": "为指定竞品生成 SWOT 分析",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "target": { "type": "string", "description": "竞品名称" },
+      "data": { "type": "string", "description": "该竞品的对比数据 JSON 字符串" }
+    },
+    "required": ["target", "data"]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "matrix_builder",
+  "description": "基于结构化数据生成对比矩阵（每个属性一行，每个竞品一列）",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "targets": { "type": "array", "items": { "type": "string" } },
+      "data": { "type": "string", "description": "结构化对比数据的 JSON 字符串" }
+    },
+    "required": ["targets", "data"]
+  }
+}
