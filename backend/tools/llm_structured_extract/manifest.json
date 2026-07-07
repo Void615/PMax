@@ -1,0 +1,13 @@
+{
+  "name": "llm_structured_extract",
+  "description": "调用 LLM 从文本中提取结构化 JSON 数据",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string", "description": "待提取的原始文本" },
+      "schema": { "type": "object", "description": "期望输出的 JSON Schema" },
+      "instruction": { "type": "string", "description": "提取指令" }
+    },
+    "required": ["text", "instruction"]
+  }
+}
