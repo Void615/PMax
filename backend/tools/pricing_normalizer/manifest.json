@@ -1,0 +1,11 @@
+{
+  "name": "pricing_normalizer",
+  "description": "统一货币和计费周期，提取标准化价格层级",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": { "type": "string", "description": "价格描述文本" }
+    },
+    "required": ["text"]
+  }
+}
