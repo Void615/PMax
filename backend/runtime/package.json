@@ -1,0 +1,17 @@
+{
+  "name": "@pmax/runtime-ts",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.10"
+  }
+}
