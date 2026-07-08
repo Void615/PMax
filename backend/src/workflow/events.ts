@@ -81,21 +81,21 @@ export function fold(
         control: { ...state.control, currentNode: event.targetNode },
       };
 
-    // route.required / workflow.completed / failed / cancelled — never change state.data
+    // route.required / workflow.completed / failed / cancelled — 不改 state
     default:
       return state;
   }
 }
 
 /**
- * Count how many times a nodeId appears in executionPath (its current iteration).
+ * 从 RuntimeState 计算某个已执行节点的当前 iteration 数。
  */
 export function countIterations(state: RuntimeState, nodeId: string): number {
   return state.control.executionPath.filter(s => s.nodeId === nodeId).length;
 }
 
 /**
- * Get a Capability's outputHints from the registry.
+ * 获取某 Capability 的 outputHints。
  */
 export function getOutputKeys(nodeId: string, registry: CapabilityRegistry): string[] {
   const cap = registry.get(nodeId);
