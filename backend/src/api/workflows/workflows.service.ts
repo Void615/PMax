@@ -1,19 +1,21 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../infra/database/prisma.service';
 import { EventsService } from '../events/events.service';
-import { GraphRuntime, CapabilityRegistry } from '../../../runtime/index.js';
+import { RedisService } from '../../infra/redis/redis.service';
 import { createRegistry } from '../../../entry/workflow.js';
+import { runWorkflow } from '../../../src/workflow/runner.js';
+import type { RunnerDeps } from '../../../src/workflow/runner.js';
+import type { WorkflowLifecycleEvent, HumanDecision } from '../../../src/workflow/events.js';
 
 @Injectable()
 export class WorkflowsService {
-  private registry: CapabilityRegistry;
+  private abortControllers = new Map<string, AbortController>();
 
   constructor(
     private prisma: PrismaService,
     private eventsService: EventsService,
-  ) {
-    this.registry = new CapabilityRegistry();
-  }
+    private redis: RedisService,
+  ) {}
 
   async createWorkflow(userId: string, input: string) {
     const workflow = await this.prisma.workflow.create({
@@ -24,9 +26,7 @@ export class WorkflowsService {
       },
     });
 
-    // 异步执行工作流
     this.executeWorkflow(workflow.id, input).catch(console.error);
-
     return workflow;
   }
 
@@ -35,11 +35,7 @@ export class WorkflowsService {
       where: { id },
       include: { events: true, artifacts: true },
     });
-
-    if (!workflow) {
-      throw new NotFoundException('工作流不存在');
-    }
-
+    if (!workflow) throw new NotFoundException('工作流不存在');
     return workflow;
   }
 
@@ -54,20 +50,72 @@ export class WorkflowsService {
     });
   }
 
-  async routeDecision(workflowId: string, nodeId: string) {
-    // TODO: 实现路由决策逻辑
-    return { workflowId, nodeId, status: 'accepted' };
+  async routeDecision(workflowId: string, targetNode: string, action: "continue" | "backjump" = "continue") {
+    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
+    if (!workflow) throw new NotFoundException('工作流不存在');
+    if (workflow.status !== 'paused') throw new ConflictException('工作流未处于暂停状态');
+
+    const eventType = action === "backjump" ? "human.backjumped" : "human.continued";
+    await this.eventsService.publishEvent(workflowId, {
+      eventType,
+      nodeId: targetNode,
+      payload: { targetNode, action },
+      timestamp: new Date().toISOString(),
+    });
+
+    await this.prisma.workflow.update({
+      where: { id: workflowId },
+      data: { status: "running", pausedAt: null, currentNode: targetNode },
+    });
+
+    const decision: HumanDecision = { targetNode, action };
+    await this.redis.publish(`workflow:${workflowId}:decision`, JSON.stringify(decision));
+
+    return { workflowId, targetNode, action, status: "accepted" };
+  }
+
+  async cancelWorkflow(workflowId: string) {
+    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
+    if (!workflow) throw new NotFoundException('工作流不存在');
+    if (['completed', 'failed', 'cancelled'].includes(workflow.status)) {
+      throw new ConflictException('工作流已终止');
+    }
+
+    const controller = this.abortControllers.get(workflowId);
+    if (controller) {
+      controller.abort();
+      this.abortControllers.delete(workflowId);
+    }
+
+    await this.eventsService.publishEvent(workflowId, {
+      eventType: "workflow.cancelled",
+      nodeId: "system",
+      payload: { reason: "user_cancelled" },
+      timestamp: new Date().toISOString(),
+    });
+
+    await this.prisma.workflow.update({
+      where: { id: workflowId },
+      data: { status: "cancelled", pausedAt: null },
+    });
+
+    return { workflowId, status: "cancelled" };
   }
 
   private async executeWorkflow(workflowId: string, input: string) {
+    const abortController = new AbortController();
+    this.abortControllers.set(workflowId, abortController);
+
     try {
-      // 更新状态为运行中
       await this.prisma.workflow.update({
         where: { id: workflowId },
         data: { status: 'running' },
       });
 
-      // 创建 EventBus 包装器，桥接到 EventsService
+      const registry = createRegistry({
+        complete: async (_prompt: string) => 'LLM response placeholder',
+      });
+
       const eventBus = {
         publish: async (event: any) => {
           await this.eventsService.publishEvent(workflowId, event);
@@ -76,63 +124,78 @@ export class WorkflowsService {
         unsubscribe: async () => {},
       };
 
-      // 创建 LLM 客户端（占位）
-      const llmClient = {
-        complete: async (prompt: string) => 'LLM response placeholder',
+      const deps: RunnerDeps = {
+        loadEventStream: async (wfId: string) => {
+          const events = await this.eventsService.getWorkflowEvents(wfId);
+          return events
+            .filter((e: any) => e.payload && typeof e.payload === 'object' && 'type' in e.payload)
+            .map((e: any) => e.payload as WorkflowLifecycleEvent);
+        },
+        appendEvent: async (wfId: string, event: WorkflowLifecycleEvent) => {
+          await this.eventsService.publishEvent(wfId, {
+            eventType: event.type,
+            nodeId: 'nodeId' in event ? (event as any).nodeId : (event as any).targetNode ?? 'system',
+            payload: event,
+            timestamp: new Date().toISOString(),
+          });
+        },
+        waitForHumanDecision: (wfId: string) => {
+          return new Promise<HumanDecision>((resolve) => {
+            this.redis.subscribe(`workflow:${wfId}:decision`, (msg: string) => {
+              resolve(JSON.parse(msg));
+            });
+          });
+        },
+        updateWorkflowStatus: async (wfId: string, data: any) => {
+          await this.prisma.workflow.update({ where: { id: wfId }, data });
+        },
       };
 
-      // 创建 Registry 和 GraphRuntime
-      const registry = createRegistry(llmClient);
-      const runtime = new GraphRuntime(registry);
-
-      // 执行入口节点
-      const state = runtime.initialState({ userInput: input });
-      const result = await runtime.executeStep('requirement_parsing', state, {
-        traceId: '',
+      const ctx = {
+        traceId: "",
         workflowId,
-        runId: state.runtime.runId,
-        nodeId: 'requirement_parsing',
+        runId: "",
+        nodeId: "",
         iteration: 0,
-        signal: new AbortController().signal,
+        signal: abortController.signal,
         llm: {
-          complete: llmClient.complete,
+          complete: async (_prompt: string) => 'LLM response placeholder',
           plan: async () => ({ phases: [] }),
           synthesize: async (_state: Record<string, any>, r: any[]) => r,
         },
-        emit: async (event: any) => {
-          await eventBus.publish(event);
+        emit: async (event: any, _opts?: any) => {
+          await eventBus.publish({
+            traceId: "",
+            eventType: event.eventType ?? "EVENT",
+            uiHint: event.uiHint,
+            nodeId: "",
+            workflowId,
+            runId: "",
+            payload: event.payload ?? {},
+            timestamp: new Date().toISOString(),
+          } as any);
         },
-        saveArtifact: async (_draft: any) => '',
-      });
+        saveArtifact: async (_draft: any) => "",
+      };
 
-      // 保存产物
-      await this.prisma.artifact.create({
-        data: {
-          workflowId,
-          type: 'analysis_result',
-          content: result.data,
-        },
-      });
+      const gen = runWorkflow(workflowId, input, registry, ctx, eventBus, deps);
+      for await (const _ of gen) {
+        if (abortController.signal.aborted) break;
+      }
 
-      // 更新状态为完成
-      await this.prisma.workflow.update({
-        where: { id: workflowId },
-        data: { status: 'completed' },
-      });
+      this.abortControllers.delete(workflowId);
     } catch (error: any) {
-      // 更新状态为失败
       await this.prisma.workflow.update({
         where: { id: workflowId },
         data: { status: 'failed' },
       });
-
-      // 发布错误事件
       await this.eventsService.publishEvent(workflowId, {
-        eventType: 'workflow_failed',
+        eventType: 'workflow.failed',
         nodeId: 'system',
-        payload: { error: error.message },
+        payload: { type: "workflow.failed", error: error.message },
         timestamp: new Date().toISOString(),
       });
+      this.abortControllers.delete(workflowId);
     }
   }
 }

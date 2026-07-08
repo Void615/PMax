@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../../entry/workflow.js', () => ({
-  createWorkflow: vi.fn(() => ({
-    run: vi.fn().mockResolvedValue({ data: { test: 'result' } }),
+  createRegistry: vi.fn(() => ({
+    get: vi.fn(() => ({ outputHints: [] })),
+    register: vi.fn(),
   })),
 }));
 
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, ConflictException } from '@nestjs/common';
 import { WorkflowsService } from '../workflows.service';
 
 function createMockPrisma() {
@@ -20,6 +21,9 @@ function createMockPrisma() {
       create: vi.fn(),
       findMany: vi.fn(),
     },
+    event: {
+      findMany: vi.fn(),
+    },
   } as any;
 }
 
@@ -31,16 +35,27 @@ function createMockEventsService() {
   } as any;
 }
 
+function createMockRedisService() {
+  return {
+    publish: vi.fn(),
+    subscribe: vi.fn(),
+  } as any;
+}
+
 describe('WorkflowsService', () => {
   let service: WorkflowsService;
   let prisma: ReturnType<typeof createMockPrisma>;
   let eventsService: ReturnType<typeof createMockEventsService>;
+  let redis: ReturnType<typeof createMockRedisService>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     prisma = createMockPrisma();
     eventsService = createMockEventsService();
-    service = new WorkflowsService(prisma, eventsService);
+    redis = createMockRedisService();
+    // Mock getWorkflowEvents for executeWorkflow
+    eventsService.getWorkflowEvents.mockResolvedValue([]);
+    service = new WorkflowsService(prisma, eventsService, redis);
   });
 
   describe('createWorkflow', () => {
@@ -177,24 +192,82 @@ describe('WorkflowsService', () => {
   });
 
   describe('routeDecision', () => {
-    it('should return accepted status for route decision', async () => {
-      const result = await service.routeDecision('wf-1', 'node-1');
+    it('should accept a continue decision and publish to redis', async () => {
+      const workflow = { id: 'wf-1', status: 'paused' };
+      prisma.workflow.findUnique.mockResolvedValue(workflow);
+      prisma.workflow.update.mockResolvedValue({});
+      eventsService.publishEvent.mockResolvedValue({});
+      redis.publish.mockResolvedValue(undefined);
+
+      const result = await service.routeDecision('wf-1', 'node-1', 'continue');
 
       expect(result).toEqual({
         workflowId: 'wf-1',
-        nodeId: 'node-1',
+        targetNode: 'node-1',
+        action: 'continue',
+        status: 'accepted',
+      });
+      expect(redis.publish).toHaveBeenCalledWith(
+        'workflow:wf-1:decision',
+        JSON.stringify({ targetNode: 'node-1', action: 'continue' }),
+      );
+    });
+
+    it('should accept a backjump decision', async () => {
+      const workflow = { id: 'wf-abc', status: 'paused' };
+      prisma.workflow.findUnique.mockResolvedValue(workflow);
+      prisma.workflow.update.mockResolvedValue({});
+      eventsService.publishEvent.mockResolvedValue({});
+      redis.publish.mockResolvedValue(undefined);
+
+      const result = await service.routeDecision('wf-abc', 'requirement_parsing', 'backjump');
+
+      expect(result).toEqual({
+        workflowId: 'wf-abc',
+        targetNode: 'requirement_parsing',
+        action: 'backjump',
         status: 'accepted',
       });
     });
 
-    it('should handle different workflow and node ids', async () => {
-      const result = await service.routeDecision('wf-abc', 'requirement_parsing');
+    it('should throw NotFoundException when workflow not found', async () => {
+      prisma.workflow.findUnique.mockResolvedValue(null);
 
-      expect(result).toEqual({
-        workflowId: 'wf-abc',
-        nodeId: 'requirement_parsing',
-        status: 'accepted',
-      });
+      await expect(service.routeDecision('nonexistent', 'node-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw ConflictException when workflow is not paused', async () => {
+      const workflow = { id: 'wf-1', status: 'running' };
+      prisma.workflow.findUnique.mockResolvedValue(workflow);
+
+      await expect(service.routeDecision('wf-1', 'node-1')).rejects.toThrow(ConflictException);
+      await expect(service.routeDecision('wf-1', 'node-1')).rejects.toThrow('工作流未处于暂停状态');
+    });
+  });
+
+  describe('cancelWorkflow', () => {
+    it('should cancel a paused workflow', async () => {
+      const workflow = { id: 'wf-1', status: 'paused' };
+      prisma.workflow.findUnique.mockResolvedValue(workflow);
+      prisma.workflow.update.mockResolvedValue({});
+      eventsService.publishEvent.mockResolvedValue({});
+
+      const result = await service.cancelWorkflow('wf-1');
+
+      expect(result).toEqual({ workflowId: 'wf-1', status: 'cancelled' });
+    });
+
+    it('should throw ConflictException when workflow already terminated', async () => {
+      const workflow = { id: 'wf-1', status: 'completed' };
+      prisma.workflow.findUnique.mockResolvedValue(workflow);
+
+      await expect(service.cancelWorkflow('wf-1')).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw NotFoundException when workflow not found', async () => {
+      prisma.workflow.findUnique.mockResolvedValue(null);
+
+      await expect(service.cancelWorkflow('nonexistent')).rejects.toThrow(NotFoundException);
     });
   });
 });
