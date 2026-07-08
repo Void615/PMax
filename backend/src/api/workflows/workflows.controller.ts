@@ -31,8 +31,16 @@ export class WorkflowsController {
   }
 
   @Post(':id/route')
-  routeDecision(@Param('id') id: string, @Body() body: { nodeId: string }) {
-    return this.workflowsService.routeDecision(id, body.nodeId);
+  routeDecision(
+    @Param('id') id: string,
+    @Body() body: { targetNode: string; action?: "continue" | "backjump" }
+  ) {
+    return this.workflowsService.routeDecision(id, body.targetNode, body.action ?? "continue");
+  }
+
+  @Post(':id/cancel')
+  cancelWorkflow(@Param('id') id: string) {
+    return this.workflowsService.cancelWorkflow(id);
   }
 
   @Get(':id/history')
