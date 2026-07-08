@@ -27,6 +27,7 @@ export class WorkflowsService {
     });
 
     this.executeWorkflow(workflow.id, input).catch(console.error);
+
     return workflow;
   }
 
@@ -35,7 +36,11 @@ export class WorkflowsService {
       where: { id },
       include: { events: true, artifacts: true },
     });
-    if (!workflow) throw new NotFoundException('工作流不存在');
+
+    if (!workflow) {
+      throw new NotFoundException('工作流不存在');
+    }
+
     return workflow;
   }
 
@@ -51,9 +56,15 @@ export class WorkflowsService {
   }
 
   async routeDecision(workflowId: string, targetNode: string, action: "continue" | "backjump" = "continue") {
-    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
-    if (!workflow) throw new NotFoundException('工作流不存在');
-    if (workflow.status !== 'paused') throw new ConflictException('工作流未处于暂停状态');
+    const workflow = await this.prisma.workflow.findUnique({
+      where: { id: workflowId },
+    });
+    if (!workflow) {
+      throw new NotFoundException('工作流不存在');
+    }
+    if (workflow.status !== 'paused') {
+      throw new ConflictException('工作流未处于暂停状态');
+    }
 
     const eventType = action === "backjump" ? "human.backjumped" : "human.continued";
     await this.eventsService.publishEvent(workflowId, {
@@ -69,15 +80,22 @@ export class WorkflowsService {
     });
 
     const decision: HumanDecision = { targetNode, action };
-    await this.redis.publish(`workflow:${workflowId}:decision`, JSON.stringify(decision));
+    await this.redis.publish(
+      `workflow:${workflowId}:decision`,
+      JSON.stringify(decision)
+    );
 
     return { workflowId, targetNode, action, status: "accepted" };
   }
 
   async cancelWorkflow(workflowId: string) {
-    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
-    if (!workflow) throw new NotFoundException('工作流不存在');
-    if (['completed', 'failed', 'cancelled'].includes(workflow.status)) {
+    const workflow = await this.prisma.workflow.findUnique({
+      where: { id: workflowId },
+    });
+    if (!workflow) {
+      throw new NotFoundException('工作流不存在');
+    }
+    if (workflow.status === 'completed' || workflow.status === 'failed' || workflow.status === 'cancelled') {
       throw new ConflictException('工作流已终止');
     }
 
@@ -113,7 +131,7 @@ export class WorkflowsService {
       });
 
       const registry = createRegistry({
-        complete: async (_prompt: string) => 'LLM response placeholder',
+        complete: async (prompt: string) => 'LLM response placeholder',
       });
 
       const eventBus = {
@@ -134,20 +152,24 @@ export class WorkflowsService {
         appendEvent: async (wfId: string, event: WorkflowLifecycleEvent) => {
           await this.eventsService.publishEvent(wfId, {
             eventType: event.type,
-            nodeId: 'nodeId' in event ? (event as any).nodeId : (event as any).targetNode ?? 'system',
+            nodeId: "nodeId" in event ? (event as any).nodeId : (event as any).targetNode ?? "system",
             payload: event,
             timestamp: new Date().toISOString(),
           });
         },
         waitForHumanDecision: (wfId: string) => {
           return new Promise<HumanDecision>((resolve) => {
-            this.redis.subscribe(`workflow:${wfId}:decision`, (msg: string) => {
+            const channel = `workflow:${wfId}:decision`;
+            this.redis.subscribe(channel, (msg: string) => {
               resolve(JSON.parse(msg));
             });
           });
         },
-        updateWorkflowStatus: async (wfId: string, data: any) => {
-          await this.prisma.workflow.update({ where: { id: wfId }, data });
+        updateWorkflowStatus: async (wfId: string, data) => {
+          await this.prisma.workflow.update({
+            where: { id: wfId },
+            data,
+          });
         },
       };
 
@@ -159,7 +181,7 @@ export class WorkflowsService {
         iteration: 0,
         signal: abortController.signal,
         llm: {
-          complete: async (_prompt: string) => 'LLM response placeholder',
+          complete: async (prompt: string) => 'LLM response placeholder',
           plan: async () => ({ phases: [] }),
           synthesize: async (_state: Record<string, any>, r: any[]) => r,
         },
@@ -179,6 +201,7 @@ export class WorkflowsService {
       };
 
       const gen = runWorkflow(workflowId, input, registry, ctx, eventBus, deps);
+
       for await (const _ of gen) {
         if (abortController.signal.aborted) break;
       }
