@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../infra/database/prisma.service';
 import { EventsService } from '../events/events.service';
 import { GraphRuntime, CapabilityRegistry } from '../../../runtime/index.js';
-import { createWorkflow } from '../../../entry/workflow.js';
+import { createRegistry } from '../../../entry/workflow.js';
 
 @Injectable()
 export class WorkflowsService {
@@ -81,9 +81,29 @@ export class WorkflowsService {
         complete: async (prompt: string) => 'LLM response placeholder',
       };
 
-      // 执行工作流（createWorkflow 内部会创建 GraphRuntime 和 CapabilityRegistry）
-      const workflow = createWorkflow(llmClient, eventBus);
-      const result = await workflow.run(input);
+      // 创建 Registry 和 GraphRuntime
+      const registry = createRegistry(llmClient);
+      const runtime = new GraphRuntime(registry);
+
+      // 执行入口节点
+      const state = runtime.initialState({ userInput: input });
+      const result = await runtime.executeStep('requirement_parsing', state, {
+        traceId: '',
+        workflowId,
+        runId: state.runtime.runId,
+        nodeId: 'requirement_parsing',
+        iteration: 0,
+        signal: new AbortController().signal,
+        llm: {
+          complete: llmClient.complete,
+          plan: async () => ({ phases: [] }),
+          synthesize: async (_state: Record<string, any>, r: any[]) => r,
+        },
+        emit: async (event: any) => {
+          await eventBus.publish(event);
+        },
+        saveArtifact: async (_draft: any) => '',
+      });
 
       // 保存产物
       await this.prisma.artifact.create({
