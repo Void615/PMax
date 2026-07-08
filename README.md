@@ -11,18 +11,18 @@
 
 ## 开发阶段与目标
 
-- 当前：Phase 1
+- 当前：Phase 2
 
 ### Phase 1
 
 - 目标：学习明确竞品分析业务场景、确认系统设计和技术栈选型、搭建 agent 基础设施骨架
 
-- [ ] 业务场景：明确常见竞品分析目标和相关产物、提取通用化工作流
-- [ ] 系统设计：
+- [x] 业务场景：明确常见竞品分析目标和相关产物、提取通用化工作流
+- [x] 系统设计：
   - [x] 采用 Orchestrator 模式动态编排主要节点
-  - [ ] 具体节点业务能力解耦为可插拔 skills
+  - [x] 具体节点业务能力解耦为可插拔 skills
   - [x] 构建健壮的事件总线
-  - [ ] 定义明确的节点事件类型
+  - [x] 定义明确的节点事件类型
 - [x] AI Infra：构建**分布式、可插拔的多节点运行时**
 
 ### Phase 2
@@ -39,14 +39,14 @@ flowchart LR
 ```
 
 - [ ] 链路打通：打通对于**”横向产品对比“**这一分析需求的完整分析链路。
-  - [ ] 设计适用于该需求的 skills 和基本路由决策
-  - [ ] 设计基本的 agent 错误处理、重试和兜底策略
+  - [x] 设计适用于该需求的 skills 和基本路由决策
+  - [x] 设计基本的 agent 错误处理、重试和兜底策略
   - [ ] 支持全链路中的人在回路决策机制
 
-- [ ] 后端搭建：
-  - [ ] 建立基本 API 端点路由
-  - [ ] 异常处理逻辑与兜底
-  - [ ] 数据、事件事务设计
+- [x] 后端搭建：
+  - [x] 建立基本 API 端点路由
+  - [x] 异常处理逻辑与兜底
+  - [x] 数据、事件事务设计
 - [ ] 前端搭建：设计子页面、组件样式与动画、不同事件 payload 对应的不同子组件（输出）
 
 ### Phase 3
@@ -67,4 +67,32 @@ flowchart LR
 | [其他子分析目标]       |                                                              |                                        |
 
 
+## 通用 Agentic Workflow 设计
+
+当前设计 5 节点通用工作流：
+
+```mermaid
+    flowchart LR
+    A["需求明确<br/>requirement_parsing"] --> B["信息采集<br/>information_collection"] --> C["信息处理<br/>information_processing"] --> D["分析推理<br/>analysis_reasoning"] --> E["产物生成<br/>artifact_generation"]
+```
+
+计划用此工作流覆盖预设的 3 种主要分析业务场景，差异化由节点的不同 tools 补足。
+
+### 需求明确 Requirement_parsing
+
+
+
+### 信息采集 Information_collection
+
+
+
+### 信息处理 Information_processing
+
+
+
+### 分析推理 Analysis_reasoning
+
+
+
+### 产物生成 Artifact_generation
 
