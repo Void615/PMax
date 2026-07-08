@@ -6,8 +6,24 @@ node_modules/
 dist/
 build/
 
+# Test temporary files
+__mocks__/
+
+# TypeScript compiled files (in source directories)
+backend/runtime/**/*.js
+backend/runtime/**/*.js.map
+backend/runtime/**/*.d.ts
+backend/runtime/**/*.d.ts.map
+backend/entry/*.js
+backend/entry/*.d.ts
+backend/capabilities/**/*.js
+backend/capabilities/**/*.d.ts
+backend/tools/**/*.js
+backend/tools/**/*.d.ts
+
 # AI agent workspace
 .trae/
+.agents/
 .claude/
 CLAUDE.md
 
@@ -18,6 +34,7 @@ CLAUDE.md
 # Environment
 *.env
 .env
+.env.test
 .envrc
 
 # Logs
