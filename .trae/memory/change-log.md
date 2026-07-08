@@ -247,3 +247,12 @@
   - 修改：backend/entry/__tests__/workflow.test.ts
 - 副作用：entry/workflow.ts 删除 createWorkflow 编排循环，外部需改用 createRegistry + runWorkflow
 - 其他信息：不改动 backend/runtime/ 任何文件。Commits: 8af824a..deef4ef
+
+## 2026-07-08 20:11
+- 概述：HITL 人在回路实现收尾
+- 详细描述：全量测试 66/66 通过，类型编译无误。完成开发进度更新（P2.4.1/P2.4.2 标记完成）、实现报告（/docs/HITL-impl/report.md）。分支 feat/p2-HITL，基于 main (c8d515c)，9 个 Task 全完成。
+- 影响的文件：
+  - 新建：docs/HITL-impl/report.md
+  - 修改：.trae/memory/dev-progress.md, .trae/memory/change-log.md
+- 副作用：无
+- 其他信息：HITL 全链路实现闭环。Commit deef4ef..HEAD
