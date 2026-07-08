@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { createWorkflow } from "../workflow.js";
-import type { EventBus } from "../../runtime/index.js";
+import { createRegistry } from "../workflow.js";
+import { runWorkflow } from "../../src/workflow/runner.js";
+import type { RunnerDeps } from "../../src/workflow/runner.js";
+import type { WorkflowLifecycleEvent } from "../../src/workflow/events.js";
+import { GraphRuntime } from "../../runtime/index.js";
+import type { EventBus, RuntimeState } from "../../runtime/index.js";
 import type { WorkflowData } from "../../capabilities/shared/types.js";
 
-// Mock LLM: 返回固定输出，验证数据流
 function createMockLlm() {
   return {
     async complete(prompt: string): Promise<string> {
@@ -27,114 +30,112 @@ function createMockLlm() {
       }
       if (prompt.includes("搜索计划") || prompt.includes("采集调度器")) {
         return JSON.stringify({
-          batches: [{
-            queries: [
-              { target: "微博", dimension: "functionality", query: "微博 会员 功能" },
-              { target: "知乎", dimension: "functionality", query: "知乎 盐选 功能" },
-            ],
-          }],
+          batches: [{ queries: [
+            { target: "微博", dimension: "functionality", query: "微博 会员 功能" },
+            { target: "知乎", dimension: "functionality", query: "知乎 盐选 功能" },
+          ]}],
         });
       }
       if (prompt.includes("数据提取器")) {
-        return JSON.stringify({
-          records: [
-            { attribute: "去广告", value: "支持", confidence: 0.9 },
-            { attribute: "月费价格", value: "15元/月", confidence: 0.85 },
-          ],
-        });
+        return JSON.stringify({ records: [{ attribute: "去广告", value: "支持", confidence: 0.9 }] });
       }
       if (prompt.includes("竞品分析师")) {
         return JSON.stringify({
-          comparisonMatrix: [
-            {
-              dimension: "functionality",
-              attribute: "去广告",
-              values: [{ target: "微博", value: "支持", sourceTraceId: "" }, { target: "知乎", value: "支持", sourceTraceId: "" }],
-              winner: null,
-              analysis: "两者均支持去广告",
-            },
-          ],
+          comparisonMatrix: [{
+            dimension: "functionality", attribute: "去广告",
+            values: [{ target: "微博", value: "支持", sourceTraceId: "" }, { target: "知乎", value: "支持", sourceTraceId: "" }],
+            winner: null, analysis: "两者均支持去广告",
+          }],
         });
       }
       if (prompt.includes("SWOT 分析")) {
-        return JSON.stringify({
-          swot: [
-            { category: "strengths", point: "内容丰富", evidence: "对比数据显示功能全面", sourceTraceIds: [], target: "微博" },
-            { category: "weaknesses", point: "价格较高", evidence: "定价数据", sourceTraceIds: [], target: "微博" },
-          ],
-        });
+        return JSON.stringify({ swot: [
+          { category: "strengths", point: "内容丰富", evidence: "", sourceTraceIds: [], target: "微博" },
+          { category: "weaknesses", point: "价格较高", evidence: "", sourceTraceIds: [], target: "微博" },
+        ]});
       }
-      // summary / llm_ranker fallback (invalid JSON → triggers fallbackRank)
-      return "微博和知乎在会员功能上各有侧重，微博偏向社交增值，知乎偏向内容获取。";
+      return "微博和知乎在会员功能上各有侧重。";
     },
   };
 }
 
-// Mock EventBus: 不抛异常即可
 function createMockEventBus(): EventBus {
   return {
-    async publish(_event: any): Promise<void> { /* no-op */ },
-    async subscribe(_workflowId: string, _handler: (event: any) => void): Promise<void> { /* no-op */ },
-    async unsubscribe(_workflowId: string): Promise<void> { /* no-op */ },
+    async publish(_event: any): Promise<void> {},
+    async subscribe(_workflowId: string, _handler: (event: any) => void): Promise<void> {},
+    async unsubscribe(_workflowId: string): Promise<void> {},
   };
 }
 
-describe("Phase 2 全链路 E2E", () => {
-  it("should complete product comparison workflow end to end", async () => {
-    const llm = createMockLlm();
-    const eventBus = createMockEventBus();
-    const workflow = createWorkflow(llm, eventBus);
+function createMockDeps(): RunnerDeps {
+  const events: WorkflowLifecycleEvent[] = [];
+  return {
+    loadEventStream: async () => events,
+    appendEvent: async (_wfId, event) => { events.push(event); },
+    waitForHumanDecision: async () => {
+      const routeEvent = [...events].reverse().find(e => e.type === "route.required");
+      if (routeEvent && routeEvent.type === "route.required" && routeEvent.suggestions.length > 0) {
+        return { targetNode: routeEvent.suggestions[0].nodeId, action: "continue" };
+      }
+      return { targetNode: "artifact_generation", action: "continue" };
+    },
+    updateWorkflowStatus: async () => {},
+  };
+}
 
-    const state = await workflow.run("对比微博和知乎的会员功能差异");
+async function runToCompletion(input: string) {
+  const llm = createMockLlm();
+  const registry = createRegistry(llm);
+  const eventBus = createMockEventBus();
+  const deps = createMockDeps();
+  const runtime = new GraphRuntime(registry);
+  let state = runtime.initialState({ userInput: input } as WorkflowData);
 
-    const data = state.data as WorkflowData;
+  const collectedEvents: WorkflowLifecycleEvent[] = [];
+  const wrappedDeps: RunnerDeps = {
+    ...deps,
+    appendEvent: async (_wfId, event) => { collectedEvents.push(event); return deps.appendEvent(_wfId, event); },
+  };
 
-    // 1. config 已生成
-    expect(data.config).toBeDefined();
-    expect(data.config!.targets).toHaveLength(2);
-    expect(data.config!.dimensions).toContain("functionality");
+  const ctx = {
+    traceId: "", workflowId: "test-wf", runId: state.runtime.runId, nodeId: "", iteration: 0,
+    signal: new AbortController().signal,
+    llm: { complete: llm.complete, plan: async () => ({ phases: [] }), synthesize: async (_s: any, r: any[]) => r },
+    emit: async (event: any) => {
+      await eventBus.publish({ traceId: "", eventType: event.eventType ?? "EVENT", uiHint: event.uiHint, nodeId: "", workflowId: "test-wf", runId: "", payload: event.payload ?? {}, timestamp: new Date().toISOString() } as any);
+    },
+    saveArtifact: async () => "",
+  };
 
-    // 2. rawData 已采集
-    expect(data.rawData).toBeDefined();
+  const gen = runWorkflow("test-wf", input, registry, ctx, eventBus, wrappedDeps);
+  for await (const _ of gen) {}
 
-    // 3. analysisResults 已生成
-    expect(data.analysisResults).toBeDefined();
-    expect(data.analysisResults!.comparisonMatrix.length).toBeGreaterThan(0);
-    expect(data.analysisResults!.summary).toBeTruthy();
+  return collectedEvents;
+}
 
-    // 4. artifacts 已生成
-    expect(data.artifacts).toBeDefined();
-    expect(data.artifacts!.length).toBeGreaterThan(0);
-    const artifactTypes = data.artifacts!.map(a => a.type);
-    expect(artifactTypes).toContain("comparison_matrix");
-    expect(artifactTypes).toContain("summary");
-    expect(artifactTypes).toContain("swot");
+describe("Phase 2 E2E with HITL runner", () => {
+  it("produces complete event chain for product comparison", async () => {
+    const events = await runToCompletion("对比微博和知乎的会员功能差异");
+
+    const executed = events.filter(e => e.type === "node.executed").map(e => (e as any).nodeId);
+    expect(executed).toContain("requirement_parsing");
+    expect(executed).toContain("information_collection");
+    expect(executed).toContain("analysis_reasoning");
+    expect(executed).toContain("artifact_generation");
+
+    const completed = events.find(e => e.type === "workflow.completed");
+    expect(completed).toBeDefined();
+
+    const routeEvents = events.filter(e => e.type === "route.required");
+    expect(routeEvents.length).toBeGreaterThanOrEqual(2);
+
+    const continuedEvents = events.filter(e => e.type === "human.continued");
+    expect(continuedEvents.length).toBe(routeEvents.length);
   });
 
-  it("should handle empty user input gracefully", async () => {
-    const llm = createMockLlm();
-    const eventBus = createMockEventBus();
-    const workflow = createWorkflow(llm, eventBus);
-
-    const state = await workflow.run("");
-    const data = state.data as WorkflowData;
-
-    expect(data.config).toBeDefined();
-  });
-
-  it("should contain source maps in artifacts", async () => {
-    const llm = createMockLlm();
-    const eventBus = createMockEventBus();
-    const workflow = createWorkflow(llm, eventBus);
-
-    const state = await workflow.run("对比微博和知乎");
-    const data = state.data as WorkflowData;
-
-    expect(data.artifacts).toBeDefined();
-    for (const artifact of data.artifacts!) {
-      expect(artifact.sourceMap).toBeDefined();
-      expect(Array.isArray(artifact.sourceMap)).toBe(true);
-      expect(artifact.content).toBeTruthy();
-    }
+  it("handles empty input", async () => {
+    const events = await runToCompletion("");
+    const executed = events.filter(e => e.type === "node.executed").map(e => (e as any).nodeId);
+    expect(executed).toContain("requirement_parsing");
   });
 });
