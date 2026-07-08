@@ -236,3 +236,14 @@
   - 创建：backend/prisma/migrations/20260708111508_add_workflow_hitl_fields/migration.sql
 - 副作用：无
 - 其他信息：HITL Phase 2 Task 1/9。Commit 8af824a
+
+## 2026-07-08 20:06
+- 概述：实现 HITL 人在回路 — 事件溯源模式全链路
+- 详细描述：新增 events.ts（事件类型定义 + fold 纯函数投影 + 回跳级联清除）、runner.ts（事件驱动编排循环 + RunnerDeps 接口）。简化 entry/workflow.ts 为 createRegistry 工厂。WorkflowsService 接入 Redis Pub/Sub 暂停/唤醒机制、routeDecision（含 backjump）、cancelWorkflow（AbortSignal）。新增 HITL 单元测试 10 个 + 更新 E2E 测试。全量 66 测试通过，TS 编译零错误。
+- 影响的文件：
+  - 新建：backend/src/workflow/events.ts, backend/src/workflow/runner.ts
+  - 修改：backend/entry/workflow.ts, backend/src/api/workflows/workflows.service.ts, workflows.controller.ts
+  - 新建：backend/src/api/workflows/__tests__/workflows-hitl.test.ts
+  - 修改：backend/entry/__tests__/workflow.test.ts
+- 副作用：entry/workflow.ts 删除 createWorkflow 编排循环，外部需改用 createRegistry + runWorkflow
+- 其他信息：不改动 backend/runtime/ 任何文件。Commits: 8af824a..deef4ef
