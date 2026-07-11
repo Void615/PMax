@@ -1,12 +1,35 @@
 // backend/entry/__tests__/workflow.test.ts
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { createRegistry } from "../workflow.js";
 import { runWorkflow } from "../../src/workflow/runner.js";
 import type { RunnerDeps } from "../../src/workflow/runner.js";
 import type { WorkflowLifecycleEvent } from "../../src/workflow/events.js";
 import { GraphRuntime } from "../../runtime/index.js";
 import type { EventBus } from "../../runtime/index.js";
+
+// mock DDG API（web_search 替换真实实现后需要，避免测试真实网络调用超时）
+const originalFetch = global.fetch;
+beforeAll(() => {
+  global.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        AbstractText: "测试摘要内容",
+        AbstractURL: "https://example.com",
+        Heading: "测试标题",
+        RelatedTopics: [
+          { Text: "相关话题1 - 描述文本", FirstURL: "https://example.com/1" },
+          { Text: "相关话题2 - 描述文本", FirstURL: "https://example.com/2" },
+        ],
+      }),
+    } as Response)
+  );
+});
+afterAll(() => {
+  global.fetch = originalFetch;
+});
 
 function createMockLlm() {
   return {
