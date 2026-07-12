@@ -9,9 +9,9 @@ import { GraphRuntime } from "../../runtime/index.js";
 import type { EventBus } from "../../runtime/index.js";
 
 // mock DDG API（web_search 替换真实实现后需要，避免测试真实网络调用超时）
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 beforeAll(() => {
-  global.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) =>
+  globalThis.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) =>
     Promise.resolve({
       ok: true,
       status: 200,
@@ -28,7 +28,7 @@ beforeAll(() => {
   );
 });
 afterAll(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
 });
 
 function createMockLlm() {

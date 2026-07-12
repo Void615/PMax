@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { webSearch } from "../skill.js";
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 function mockFetch(response: unknown, ok = true, status = 200) {
-  global.fetch = vi.fn().mockResolvedValue({
+  globalThis.fetch = vi.fn().mockResolvedValue({
     ok,
     status,
     json: async () => response,
@@ -13,7 +13,7 @@ function mockFetch(response: unknown, ok = true, status = 200) {
 
 describe("web_search - DDG API", () => {
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   });
 
   it("should parse DDG response with AbstractText, RelatedTopics, and Results", async () => {
@@ -40,6 +40,7 @@ describe("web_search - DDG API", () => {
     });
 
     const result = await webSearch.execute({ query: "微博" }, {} as any);
+    console.log(result);
 
     expect(result.totalResults).toBeGreaterThanOrEqual(3);
     expect(result.items[0]).toEqual({
@@ -64,6 +65,7 @@ describe("web_search - DDG API", () => {
     });
 
     const result = await webSearch.execute({ query: "test", maxResults: 3 }, {} as any);
+    console.log(result);
 
     expect(result.items).toHaveLength(3);
     expect(result.totalResults).toBe(3);
@@ -73,15 +75,17 @@ describe("web_search - DDG API", () => {
     mockFetch({});
 
     const result = await webSearch.execute({ query: "xyznonexistent12345" }, {} as any);
+    console.log(result);
 
     expect(result.items).toEqual([]);
     expect(result.totalResults).toBe(0);
   });
 
   it("should return empty items on network error (graceful degradation)", async () => {
-    global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
 
     const result = await webSearch.execute({ query: "test" }, {} as any);
+    console.log(result);
 
     expect(result.items).toEqual([]);
     expect(result.totalResults).toBe(0);
@@ -91,6 +95,7 @@ describe("web_search - DDG API", () => {
     mockFetch({}, false, 500);
 
     const result = await webSearch.execute({ query: "test" }, {} as any);
+    console.log(result);
 
     expect(result.items).toEqual([]);
     expect(result.totalResults).toBe(0);

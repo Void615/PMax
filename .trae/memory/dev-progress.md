@@ -1,6 +1,6 @@
 # PMax 开发进度
 
-> 最后更新：2026-07-07 23:30
+> 最后更新：2026-07-08 20:11（HITL 收尾）
 
 ## 开发阶段与目标
 
@@ -26,6 +26,7 @@ Phase 2
   - [x] tracing/ — traceId/ULID + TraceCollector
   - [x] skills/ — SkillLoader + McpAdapter
   - [x] retry.ts + state.ts + graph_runtime.ts
+  - [x] Capability 工厂模式 + 5 节点通用工作流全部实现并通过 E2E 测试验证
 
 ---
 
@@ -45,8 +46,8 @@ Phase 2
 **2.2 Tools 实现**（Capability 依赖的工具集）：
 
 - [x] **P2.2.0 llm_structured_extract Tool**：LLM 结构化 JSON 提取工具（manifest.json + skill.ts，工厂函数模式）。
-- [x] **P2.2.1 Web Search Tool**：通用网页搜索工具（对接搜索 API）。
-- [x] **P2.2.2 Web Scrape Tool**：单页内容抓取与清洗工具。
+- [x] **P2.2.1 Web Search Tool**：通用网页搜索工具（对接 DDG Instant Answer API，零外部依赖）。
+- [x] **P2.2.2 Web Scrape Tool**：单页内容抓取与清洗工具（@mozilla/readability + jsdom，含噪音过滤）。
 - [x] **P2.2.3 5 个 P0 Tools 全部完成**：web_search、web_scrape、matrix_builder、swot_generator、table_composer。
 
 **2.3 后端集成**：
@@ -115,6 +116,6 @@ Phase 2
 
 | 阶段 | 状态 | 完成度 |
 |------|------|--------|
-| Phase 1 | 进行中 | ~70%（Runtime v2 代码完成，待验证） |
-| Phase 2 | 进行中 | ~75%（7 个 Tools 全部完成，4/4 Capability 全部实现，后端骨架 10/10 Task 全部完成（含 NestJS 初始化、Prisma、Redis、用户/认证/事件/工作流模块、全局配置、E2E 测试、文档），后端集成完成，待前端开发） |
+| Phase 1 | ✅ 完成 | 100%（Runtime v2 + 5 节点通用工作流 + E2E 测试全部通过） |
+| Phase 2 | 进行中 | ~85%（8 个 Tools 全部完成，5/5 Capability 全部实现，后端骨架 10/10 Task 全部完成，HITL 人在回路闭环（事件溯源 + 暂停/唤醒 + 回跳），后端集成完成，**待前端开发（P2.5.1-P2.5.5）**） |
 | Phase 3 | 未开始 | 0% |

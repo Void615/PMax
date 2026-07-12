@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { CollectAgent } from "../../agents/collect-agent.js";
 import type { ToolContext } from "../../runtime/capability/types.js";
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 // ---------- 模拟外部网络 ----------
 
@@ -50,7 +50,7 @@ const INTERNET: Record<string, string> = {
 };
 
 function mockInternet(internet: Record<string, string>) {
-  global.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
+  globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
     const urlStr = typeof url === "string" ? url : url.toString();
 
     if (urlStr.includes("api.duckduckgo.com")) {
@@ -87,7 +87,7 @@ function mockInternet(internet: Record<string, string>) {
 // ---------- 测试 ----------
 
 afterEach(() => {
-  global.fetch = originalFetch;
+  globalThis.fetch = originalFetch;
 });
 
 describe("CollectAgent 集成：web_search → web_scrape", () => {
@@ -97,6 +97,7 @@ describe("CollectAgent 集成：web_search → web_scrape", () => {
     mockInternet(INTERNET);
 
     const report = await CollectAgent("智能手机 横向对比", { maxPages: 2 }, ctx);
+    console.log("searched:\n", report)
 
     expect(report.totalFound).toBe(2);
     expect(report.scrapedCount).toBe(2);
@@ -137,7 +138,7 @@ describe("CollectAgent 集成：web_search → web_scrape", () => {
   });
 
   it("结果包含死链时，Agent 正常处理两者（幸存 + 报错），不阻断", async () => {
-    global.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
+    globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("api.duckduckgo.com")) {

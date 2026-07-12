@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { webScrape } from "../skill.js";
 
-const originalFetch = global.fetch;
+const originalFetch = globalThis.fetch;
 
 function mockFetchResponse(
   body: string,
   options: { ok?: boolean; status?: number; contentType?: string } = {}
 ) {
   const { ok = true, status = 200, contentType = "text/html; charset=utf-8" } = options;
-  global.fetch = vi.fn().mockResolvedValue({
+  globalThis.fetch = vi.fn().mockResolvedValue({
     ok,
     status,
     headers: new Headers({ "content-type": contentType }),
@@ -18,7 +18,7 @@ function mockFetchResponse(
 
 describe("web_scrape - Readability", () => {
   afterEach(() => {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   });
 
   it("should extract title and content from HTML page", async () => {
@@ -72,7 +72,7 @@ describe("web_scrape - Readability", () => {
   });
 
   it("should return error on network failure", async () => {
-    global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
 
     const result = await webScrape.execute({ url: "https://example.com/timeout" }, {} as any);
 
