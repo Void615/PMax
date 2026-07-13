@@ -5,19 +5,35 @@ import type {
   RuntimeContext,
   Tool,
 } from "../../runtime/index.js";
-import type { RequirementConfig, RawDataItem } from "../shared/types.js";
+import type { RequirementConfig, RawDataItem, CollectionReport } from "../shared/types.js";
 import { webSearch } from "../../tools/web_search/skill.js";
 import { webScrape } from "../../tools/web_scrape/skill.js";
-import { SEARCH_PLAN_PROMPT } from "./prompts.js";
+import { createCompetitorUrlResolver } from "../../tools/competitor_url_resolver/skill.js";
+import { createSearchPlanner } from "../../tools/search_planner/skill.js";
+import { credibilityScorer } from "../../tools/credibility_scorer/skill.js";
+import { createSufficiencyChecker } from "../../tools/sufficiency_checker/skill.js";
+
+const MAX_COLLECTION_ROUNDS = 2;
 
 export function createInformationCollectionCap(
   llm: { complete(prompt: string): Promise<string> }
 ): Capability {
-  const tools: Tool[] = [webSearch, webScrape];
+  const competitorUrlResolverTool = createCompetitorUrlResolver(llm);
+  const searchPlannerTool = createSearchPlanner(llm);
+  const sufficiencyCheckerTool = createSufficiencyChecker(llm);
+
+  const tools: Tool[] = [
+    webSearch,
+    webScrape,
+    competitorUrlResolverTool,
+    searchPlannerTool,
+    credibilityScorer,
+    sufficiencyCheckerTool,
+  ];
 
   return {
     id: "information_collection",
-    description: "按竞品×维度网格采集原始信息，支持多轮分竞品采集",
+    description: "按竞品×维度网格采集原始信息，支持URL发现、多维采集、可信度评分和充分性重采",
     inputHints: ["config"],
     outputHints: ["rawData"],
     requires: ["requirement_parsing"],
@@ -35,74 +51,257 @@ export function createInformationCollectionCap(
         payload: { stage: "planning", message: `准备采集 ${config.targets.length} 个竞品 × ${config.dimensions.length} 个维度的信息` },
       });
 
-      // 1. LLM 生成搜索计划
-      const searchTool = tools.find(t => t.name === "web_search")!;
+      // ── Step 1: URL discovery for targets without URLs ──
+      await ctx.emit({
+        uiHint: "node_progress",
+        eventType: "NODE_PROGRESS",
+        payload: { stage: "url_discovery", message: "正在解析竞品URL..." },
+      });
 
-      const planPrompt = SEARCH_PLAN_PROMPT
-        .replace("{targets}", JSON.stringify(config.targets.map(t => t.name)))
-        .replace("{dimensions}", JSON.stringify(config.dimensions));
+      const targetsWithUrls = await Promise.all(
+        config.targets.map(async (target) => {
+          if (target.url) return target; // already has URL
 
-      const planRaw = await llm.complete(planPrompt);
-      const jsonMatch = planRaw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, planRaw];
-      const plan = JSON.parse((jsonMatch[1] ?? planRaw).trim());
+          const result = await competitorUrlResolverTool.execute(
+            { name: target.name, category: target.category },
+            { traceId: ctx.traceId, runId: ctx.runId }
+          );
+          return { ...target, url: result.url };
+        })
+      );
 
+      await ctx.emit({
+        uiHint: "node_progress",
+        eventType: "NODE_PROGRESS",
+        payload: {
+          stage: "url_discovery_complete",
+          message: `URL解析完成: ${targetsWithUrls.map((t) => `${t.name} → ${t.url}`).join(", ")}`,
+        },
+      });
+
+      // ── Main collection loop ──
       const allItems: RawDataItem[] = [];
+      let collectionRounds = 0;
+      let lastSufficiencyResult: { score: number; verdict: string; perDimension: Record<string, any>; suggestions: string[] } | null = null;
 
-      // 2. 按 batch 执行搜索
-      for (const batch of (plan.batches ?? [{ queries: [] }])) {
-        const queries: { target: string; dimension: string; query: string }[] = batch.queries ?? [];
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        collectionRounds++;
 
-        const results = await Promise.allSettled(
-          queries.map(async (q) => {
-            await ctx.emit({
-              uiHint: "tool_call",
-              eventType: "TOOL_CALL",
-              payload: { toolName: "web_search", params: { query: q.query } },
-            });
+        // ── Step 2: Search planning (via tool, NOT bare llm.complete) ──
+        await ctx.emit({
+          uiHint: "node_progress",
+          eventType: "NODE_PROGRESS",
+          payload: { stage: "search_planning", message: `第 ${collectionRounds} 轮: 生成搜索计划...` },
+        });
 
-            const start = Date.now();
-            const res = await searchTool.execute({ query: q.query, maxResults: 3 }, { traceId: ctx.traceId, runId: ctx.runId });
+        const planResult = await searchPlannerTool.execute(
+          {
+            targets: targetsWithUrls.map((t) => ({ name: t.name, url: t.url, category: t.category })),
+            dimensions: config.dimensions,
+            constraints: config.constraints,
+          },
+          { traceId: ctx.traceId, runId: ctx.runId }
+        );
 
-            const item: RawDataItem = {
-              target: q.target,
-              dimension: q.dimension,
-              content: res.items?.[0]?.snippet ?? JSON.stringify(res),
-              sourceUrl: res.items?.[0]?.url ?? "",
-              sourceTitle: res.items?.[0]?.title,
-              retrievedAt: new Date().toISOString(),
-              credibility: "medium",
-            };
+        const plan = planResult as { batches: { queries: { target: string; dimension: string; query: string; searchType: string }[] }[] };
 
-            await ctx.emit({
-              uiHint: "tool_result",
-              eventType: "TOOL_RESULT",
-              payload: { toolName: "web_search", durationMs: Date.now() - start, result: { title: item.sourceTitle } },
-            });
+        // ── Step 3: Batch execution ──
+        for (const batch of plan.batches ?? []) {
+          const queries = batch.queries ?? [];
 
-            return item;
+          const batchResults = await Promise.allSettled(
+            queries.map(async (q) => {
+              await ctx.emit({
+                uiHint: "tool_call",
+                eventType: "TOOL_CALL",
+                payload: { toolName: "web_search", params: { query: q.query } },
+              });
+
+              const start = Date.now();
+              const searchRes = await webSearch.execute(
+                { query: q.query, maxResults: 3 },
+                { traceId: ctx.traceId, runId: ctx.runId }
+              );
+
+              await ctx.emit({
+                uiHint: "tool_result",
+                eventType: "TOOL_RESULT",
+                payload: { toolName: "web_search", durationMs: Date.now() - start, result: { query: q.query } },
+              });
+
+              // Pick top-2 URLs from search results
+              const searchItems = searchRes.items ?? [];
+              const topUrls = searchItems.slice(0, 2).filter(
+                (item: any) => item.url && item.url.startsWith("http")
+              );
+
+              // Scrape each URL
+              const scrapedItems = await Promise.allSettled(
+                topUrls.map(async (searchItem: any) => {
+                  await ctx.emit({
+                    uiHint: "tool_call",
+                    eventType: "TOOL_CALL",
+                    payload: { toolName: "web_scrape", params: { url: searchItem.url } },
+                  });
+
+                  const scrapeStart = Date.now();
+                  const scrapeRes = await webScrape.execute(
+                    { url: searchItem.url, maxChars: 8000 },
+                    { traceId: ctx.traceId, runId: ctx.runId }
+                  );
+
+                  await ctx.emit({
+                    uiHint: "tool_result",
+                    eventType: "TOOL_RESULT",
+                    payload: { toolName: "web_scrape", durationMs: Date.now() - scrapeStart, result: { url: searchItem.url } },
+                  });
+
+                  const now = new Date().toISOString();
+
+                  if (scrapeRes.error) {
+                    // Fallback: use search snippet
+                    return {
+                      target: q.target,
+                      dimension: q.dimension,
+                      content: searchItem.snippet ?? "",
+                      sourceUrl: searchItem.url,
+                      sourceTitle: searchItem.title,
+                      retrievedAt: now,
+                      credibility: "low" as const,
+                    };
+                  }
+
+                  return {
+                    target: q.target,
+                    dimension: q.dimension,
+                    content: scrapeRes.content ?? "",
+                    sourceUrl: searchItem.url,
+                    sourceTitle: searchItem.title ?? scrapeRes.title ?? "",
+                    retrievedAt: now,
+                    credibility: "unknown" as const, // will be scored in step 4
+                  };
+                })
+              );
+
+              return scrapedItems;
+            })
+          );
+
+          // Flatten and collect
+          for (const result of batchResults) {
+            if (result.status === "fulfilled") {
+              for (const scrapedResult of result.value) {
+                if (scrapedResult.status === "fulfilled") {
+                  allItems.push(scrapedResult.value);
+                }
+              }
+            }
+          }
+        }
+
+        // ── Step 4: Credibility scoring (parallel) ──
+        await ctx.emit({
+          uiHint: "node_progress",
+          eventType: "NODE_PROGRESS",
+          payload: { stage: "credibility_scoring", message: `正在评估 ${allItems.length} 条数据的可信度...` },
+        });
+
+        const scoreResults = await Promise.allSettled(
+          allItems.map(async (item) => {
+            const scoreRes = await credibilityScorer.execute(
+              { url: item.sourceUrl, content: item.content, retrievedAt: item.retrievedAt },
+              { traceId: ctx.traceId, runId: ctx.runId }
+            );
+            return { item, score: scoreRes as { level: string } };
           })
         );
 
-        for (const r of results) {
-          if (r.status === "fulfilled") allItems.push(r.value);
+        for (const result of scoreResults) {
+          if (result.status === "fulfilled") {
+            result.value.item.credibility = (result.value.score.level as RawDataItem["credibility"]) ?? "unknown";
+          }
         }
+
+        // ── Step 5: Sufficiency check ──
+        await ctx.emit({
+          uiHint: "node_progress",
+          eventType: "NODE_PROGRESS",
+          payload: { stage: "sufficiency_check", message: "正在检查采集充分性..." },
+        });
+
+        const sufficiencyResult = await sufficiencyCheckerTool.execute(
+          {
+            rawDataItems: allItems,
+            dimensions: config.dimensions,
+            targetCount: targetsWithUrls.length,
+          },
+          { traceId: ctx.traceId, runId: ctx.runId }
+        );
+
+        const sufficiency = sufficiencyResult as { score: number; verdict: string; perDimension: Record<string, any>; suggestions: string[] };
+
+        lastSufficiencyResult = sufficiency;
+
+        await ctx.emit({
+          uiHint: "node_progress",
+          eventType: "NODE_PROGRESS",
+          payload: {
+            stage: "sufficiency_result",
+            message: `采集充分性: ${sufficiency.score}/5 (${sufficiency.verdict})`,
+            details: { perDimension: sufficiency.perDimension, suggestions: sufficiency.suggestions },
+          },
+        });
+
+        // If sufficient or max rounds reached, stop
+        if (sufficiency.score >= 3 || collectionRounds >= MAX_COLLECTION_ROUNDS) {
+          break;
+        }
+
+        await ctx.emit({
+          uiHint: "node_progress",
+          eventType: "NODE_PROGRESS",
+          payload: {
+            stage: "recollection",
+            message: `数据不充分 (${sufficiency.score}/5)，开始第 ${collectionRounds + 1} 轮补充采集...`,
+          },
+        });
       }
 
-      // 3. 完成
-      const summary = `${allItems.length} 条原始信息，覆盖 ${new Set(allItems.map(i => i.dimension)).size} 个维度`;
-      await ctx.emit({
-        uiHint: "node_completed",
-        eventType: "NODE_COMPLETED",
-        payload: { summary, itemCount: allItems.length },
-      });
+      // ── Step 6: Build report and group by dimension ──
+      const perDimension: Record<string, { count: number; credibilityBreakdown: Record<string, number> }> = {};
+      for (const dim of config.dimensions) {
+        perDimension[dim] = { count: 0, credibilityBreakdown: { high: 0, medium: 0, low: 0, unknown: 0 } };
+      }
 
-      // 按 dimension 分组存储
       const rawData: Record<string, RawDataItem[]> = {};
       for (const item of allItems) {
         const key = item.dimension;
         if (!rawData[key]) rawData[key] = [];
         rawData[key].push(item);
+
+        if (perDimension[key]) {
+          perDimension[key]!.count++;
+          perDimension[key]!.credibilityBreakdown[item.credibility]++;
+        }
       }
+
+      const totalItems = allItems.length;
+
+      const report: CollectionReport = {
+        totalItems,
+        perDimension,
+        sufficiencyScore: lastSufficiencyResult?.score ?? 1,
+        sufficiencyVerdict: (lastSufficiencyResult?.verdict ?? "insufficient") as "sufficient" | "insufficient",
+        collectionRounds,
+      };
+
+      const summary = `${totalItems} 条原始信息，覆盖 ${Object.keys(rawData).length} 个维度，充分性 ${report.sufficiencyScore}/5 (${report.collectionRounds} 轮采集)`;
+      await ctx.emit({
+        uiHint: "node_completed",
+        eventType: "NODE_COMPLETED",
+        payload: { summary, itemCount: totalItems, report },
+      });
 
       return { patch: { rawData }, artifacts: [] };
     },
