@@ -136,6 +136,19 @@ function createMockLlm() {
           ],
         });
       }
+      // ── insight_extractor ──
+      if (prompt.includes("竞争洞察专家")) {
+        return JSON.stringify({
+          insights: [
+            { category: "advantage", statement: "微博社交属性强", evidence: "微博有5亿月活，知乎8000万", relatedTargets: ["知乎"], sourceTraceIds: [] },
+            { category: "gap", statement: "会员权益单一", evidence: "微博会员仅15元/月，知乎盐选25元/月含更多内容", relatedTargets: ["知乎"], sourceTraceIds: [] },
+          ],
+        });
+      }
+      // ── comparison_summarizer ──
+      if (prompt.includes("竞品分析总结专家")) {
+        return "微博和知乎在会员功能上各有侧重。微博主打社交，知乎主打知识付费。";
+      }
       return "微博和知乎在会员功能上各有侧重。";
     },
   };
