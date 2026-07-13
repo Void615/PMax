@@ -43,6 +43,15 @@ export class WorkflowsController {
     return this.workflowsService.cancelWorkflow(id);
   }
 
+  @Post(':id/clarification')
+  async submitClarification(
+    @Param('id') id: string,
+    @Body() body: { round: number; userResponse: string },
+  ) {
+    await this.workflowsService.submitClarification(id, body.round, body.userResponse);
+    return { message: 'ok' };
+  }
+
   @Get(':id/history')
   getHistory(@Param('id') id: string) {
     return this.workflowsService.getWorkflowHistory(id);

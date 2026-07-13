@@ -88,6 +88,10 @@ export class WorkflowsService {
     return { workflowId, targetNode, action, status: "accepted" };
   }
 
+  async submitClarification(workflowId: string, round: number, userResponse: string): Promise<void> {
+    await this.redis.publish(`workflow:${workflowId}:clarification`, JSON.stringify({ round, userResponse }));
+  }
+
   async cancelWorkflow(workflowId: string) {
     const workflow = await this.prisma.workflow.findUnique({
       where: { id: workflowId },
