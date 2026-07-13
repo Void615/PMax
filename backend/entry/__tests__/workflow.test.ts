@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { createRegistry } from "../workflow.js";
 import { runWorkflow } from "../../src/workflow/runner.js";
 import type { RunnerDeps } from "../../src/workflow/runner.js";
-import type { WorkflowLifecycleEvent } from "../../src/workflow/events.js";
+import type { WorkflowLifecycleEvent, HumanClarification } from "../../src/workflow/events.js";
 import { GraphRuntime } from "../../runtime/index.js";
 import type { EventBus } from "../../runtime/index.js";
 
@@ -34,15 +34,26 @@ afterAll(() => {
 function createMockLlm() {
   return {
     async complete(prompt: string): Promise<string> {
-      if (prompt.includes("需求解析器")) {
-        return JSON.stringify({
-          analysisType: "product_comparison",
-          targets: [{ name: "微博" }, { name: "知乎" }],
-          dimensions: ["functionality", "pricing"],
-          outputFormat: ["comparison_matrix", "swot"],
-          constraints: {},
-        });
+      // ── Requirement parsing: multi-round prompts ──
+      if (prompt.includes("三种场景")) {
+        return JSON.stringify({ analysisType: "product_comparison", confidence: 0.9 });
       }
+      if (prompt.includes("从用户输入中提取所有")) {
+        return JSON.stringify({ mentioned: ["微博", "知乎"], ownProduct: "微博" });
+      }
+      if (prompt.includes("从用户回答中提取完整的竞品列表")) {
+        return JSON.stringify({ targets: [{ name: "微博", isOwn: true }, { name: "知乎", isOwn: false }] });
+      }
+      if (prompt.includes("从用户回答中提取选中的对比维度")) {
+        return JSON.stringify({ dimensions: ["functionality", "pricing"] });
+      }
+      if (prompt.includes("从用户回答中提取选中的产物格式")) {
+        return JSON.stringify({ outputFormat: ["comparison_matrix", "swot"] });
+      }
+      if (prompt.includes("从用户回答中提取分析约束条件")) {
+        return JSON.stringify({ constraints: {} });
+      }
+      // ── Orchestration ──
       if (prompt.includes("工作流编排器")) {
         return JSON.stringify({
           phases: [
@@ -106,6 +117,7 @@ function createMockEventBus(): EventBus {
 
 function createAutoContinueDeps(): RunnerDeps {
   const events: WorkflowLifecycleEvent[] = [];
+  let clarificationRound = 0;
   return {
     loadEventStream: async () => [],
     appendEvent: async (_wfId, event) => { events.push(event); },
@@ -115,6 +127,18 @@ function createAutoContinueDeps(): RunnerDeps {
         return { targetNode: routeEvent.suggestions[0].nodeId, action: "continue" };
       }
       return { targetNode: "artifact_generation", action: "continue" };
+    },
+    waitForHumanClarification: async (): Promise<HumanClarification> => {
+      clarificationRound++;
+      const responses: Record<number, string> = {
+        1: "product_comparison",
+        2: "微博和知乎，自身产品是微博",
+        3: "functionality, pricing",
+        4: "comparison_matrix, swot",
+        5: "无",
+        6: "确认",
+      };
+      return { round: clarificationRound, userResponse: responses[clarificationRound] ?? "确认" };
     },
     updateWorkflowStatus: async () => {},
   };
@@ -130,11 +154,24 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
     let state = runtime.initialState({ userInput: "对比微博和知乎的会员功能差异" });
 
     const collectedEvents: WorkflowLifecycleEvent[] = [];
+    let testClarificationRound = 0;
     const wrappedDeps: RunnerDeps = {
       ...deps,
       appendEvent: async (_wfId, event) => {
         collectedEvents.push(event);
         return deps.appendEvent(_wfId, event);
+      },
+      waitForHumanClarification: async (): Promise<HumanClarification> => {
+        testClarificationRound++;
+        const responses: Record<number, string> = {
+          1: "product_comparison",
+          2: "微博和知乎，自身产品是微博",
+          3: "functionality, pricing",
+          4: "comparison_matrix, swot",
+          5: "无",
+          6: "确认",
+        };
+        return { round: testClarificationRound, userResponse: responses[testClarificationRound] ?? "确认" };
       },
     };
 
@@ -186,9 +223,22 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
     let state = runtime.initialState({ userInput: "" });
 
     const collectedEvents: WorkflowLifecycleEvent[] = [];
+    let testClarificationRound2 = 0;
     const wrappedDeps: RunnerDeps = {
       ...deps,
       appendEvent: async (_wfId, event) => { collectedEvents.push(event); return deps.appendEvent(_wfId, event); },
+      waitForHumanClarification: async (): Promise<HumanClarification> => {
+        testClarificationRound2++;
+        const responses: Record<number, string> = {
+          1: "product_comparison",
+          2: "微博和知乎，自身产品是微博",
+          3: "functionality, pricing",
+          4: "comparison_matrix, swot",
+          5: "无",
+          6: "确认",
+        };
+        return { round: testClarificationRound2, userResponse: responses[testClarificationRound2] ?? "确认" };
+      },
     };
 
     const ctx = {
