@@ -23,3 +23,96 @@ export const PARSE_PROMPT = `你是一个需求解析器。从用户的自然语
 - targets 至少需要 2 个
 
 只输出 JSON。`;
+
+export const SCENE_CLASSIFY_PROMPT = `分析用户意图，判断属于以下哪种竞品分析场景。
+
+用户输入：{userInput}
+
+三种场景：
+1. product_comparison — 比较多个产品的功能、定价、体验等维度
+2. dev_decision      — 分析产品发展方向和竞争策略
+3. industry_trend    — 分析产业发展趋势和竞争格局
+
+当前 Phase 2 默认返回 product_comparison。
+
+输出 JSON: { "analysisType": "product_comparison", "confidence": 0.95 }
+
+只输出 JSON。`;
+
+export const TARGETS_EXTRACT_PROMPT = `从用户输入中提取所有提到的产品/竞品名称。
+如果用户未明确说明自身产品，设为 null。
+
+用户输入：{userInput}
+
+输出 JSON: { "mentioned": ["产品名1"], "ownProduct": "自身产品名或null" }
+
+只输出 JSON。`;
+
+export const TARGETS_PARSE_PROMPT = `从用户回答中提取完整的竞品列表。
+将自身产品标记为 isOwn: true，并排在第一个。
+尝试根据产品名推断品类（category），如不确定填 null。
+
+用户回答：{userResponse}
+
+输出 JSON: { "targets": [{ "name": "产品名", "isOwn": true, "category": "品类或null" }] }
+
+规则：
+- isOwn 为 true 的排在第一位
+- 至少 2 个 targets
+- category 不确定则填 null
+
+只输出 JSON。`;
+
+export const DIMENSIONS_PARSE_PROMPT = `从用户回答中提取选中的对比维度。
+
+可用维度：
+- functionality    功能特性
+- pricing          定价与付费模式
+- user_experience  用户体验与交互设计
+- market_position  市场定位与份额
+- technology       技术能力与架构
+
+用户回答：{userResponse}
+
+输出 JSON: { "dimensions": ["functionality", "pricing"] }
+
+只输出 JSON。`;
+
+export const OUTPUT_FORMAT_PARSE_PROMPT = `从用户回答中提取选中的产物格式。
+
+可用格式：
+- comparison_matrix  对比矩阵表格
+- swot               SWOT 分析
+- insight_report     差异化洞察报告
+- report             完整分析报告
+
+用户回答：{userResponse}
+
+输出 JSON: { "outputFormat": ["comparison_matrix", "swot"] }
+
+只输出 JSON。`;
+
+export const CONSTRAINTS_PARSE_PROMPT = `从用户回答中提取分析约束条件。
+
+用户回答：{userResponse}
+
+输出 JSON: {
+  "constraints": {
+    "timeRange": { "from": "2025-01-01", "to": "2025-12-31" },
+    "regions": ["中国"],
+    "languages": ["中文"],
+    "maxCompetitors": 5
+  }
+}
+
+未提及的字段省略。只输出 JSON。`;
+
+export const CONFIG_PREVIEW_PROMPT = `请确认以下分析配置：
+
+分析场景：{analysisType}
+竞品列表：{targets}
+对比维度：{dimensions}
+产物格式：{outputFormat}
+约束条件：{constraints}
+
+确认无误请回复"确认"，需要修改请说明修改内容。`;
