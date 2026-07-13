@@ -1,0 +1,63 @@
+diff --git a/backend/src/api/workflows/workflows.controller.ts b/backend/src/api/workflows/workflows.controller.ts
+index 7603669..e852c8b 100644
+--- a/backend/src/api/workflows/workflows.controller.ts
++++ b/backend/src/api/workflows/workflows.controller.ts
+@@ -36,20 +36,29 @@ export class WorkflowsController {
+     @Body() body: { targetNode: string; action?: "continue" | "backjump" }
+   ) {
+     return this.workflowsService.routeDecision(id, body.targetNode, body.action ?? "continue");
+   }
+ 
+   @Post(':id/cancel')
+   cancelWorkflow(@Param('id') id: string) {
+     return this.workflowsService.cancelWorkflow(id);
+   }
+ 
++  @Post(':id/clarification')
++  async submitClarification(
++    @Param('id') id: string,
++    @Body() body: { round: number; userResponse: string },
++  ) {
++    await this.workflowsService.submitClarification(id, body.round, body.userResponse);
++    return { message: 'ok' };
++  }
++
+   @Get(':id/history')
+   getHistory(@Param('id') id: string) {
+     return this.workflowsService.getWorkflowHistory(id);
+   }
+ 
+   @Get(':id/artifacts')
+   getArtifacts(@Param('id') id: string) {
+     return this.workflowsService.getWorkflowArtifacts(id);
+   }
+ }
+diff --git a/backend/src/api/workflows/workflows.service.ts b/backend/src/api/workflows/workflows.service.ts
+index 9cc0801..5bc7fe5 100644
+--- a/backend/src/api/workflows/workflows.service.ts
++++ b/backend/src/api/workflows/workflows.service.ts
+@@ -81,20 +81,24 @@ export class WorkflowsService {
+ 
+     const decision: HumanDecision = { targetNode, action };
+     await this.redis.publish(
+       `workflow:${workflowId}:decision`,
+       JSON.stringify(decision)
+     );
+ 
+     return { workflowId, targetNode, action, status: "accepted" };
+   }
+ 
++  async submitClarification(workflowId: string, round: number, userResponse: string): Promise<void> {
++    await this.redis.publish(`workflow:${workflowId}:clarification`, JSON.stringify({ round, userResponse }));
++  }
++
+   async cancelWorkflow(workflowId: string) {
+     const workflow = await this.prisma.workflow.findUnique({
+       where: { id: workflowId },
+     });
+     if (!workflow) {
+       throw new NotFoundException('工作流不存在');
+     }
+     if (workflow.status === 'completed' || workflow.status === 'failed' || workflow.status === 'cancelled') {
+       throw new ConflictException('工作流已终止');
+     }

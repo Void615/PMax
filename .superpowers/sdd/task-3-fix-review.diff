@@ -1,0 +1,145 @@
+diff --git a/backend/capabilities/requirement_parsing/index.ts b/backend/capabilities/requirement_parsing/index.ts
+index 8903c58..2b9c2fd 100644
+--- a/backend/capabilities/requirement_parsing/index.ts
++++ b/backend/capabilities/requirement_parsing/index.ts
+@@ -144,20 +144,23 @@ export function createRequirementParsingCap(
+             agentPrompt: prompt,
+             inputType: "single_select",
+             options: [
+               { key: "product_comparison", label: "产品横向对比", description: "多产品功能/定价/体验维度对比" },
+               { key: "dev_decision", label: "产品发展决策", description: "差异化机会和竞争策略" },
+               { key: "industry_trend", label: "产业趋势分析", description: "PEST、产业链、市场规模" },
+             ],
+           },
+         });
+ 
++        rp.roundDefs = ROUND_DEFS[analysisType] ?? ROUND_DEFS.product_comparison;
++        rp.phase = "clarification_loop";
++
+         return { patch: { _rpState: rp, _userResponse: null }, artifacts: [] };
+       }
+ 
+       // ═══════════════════════════════════════════════════════════
+       // Phase 2: clarification_loop — ROUND_DEFS driven
+       // ═══════════════════════════════════════════════════════════
+       if (rp.phase === "clarification_loop") {
+         // Process previous round's user response
+         if (userResponse != null && userResponse !== undefined && rp.roundIndex > 0) {
+           const prevDefIndex = rp.roundIndex - 1;
+@@ -355,39 +358,31 @@ export function createRequirementParsingCap(
+ 
+       // ═══════════════════════════════════════════════════════════
+       // Phase 3: confirming — preview and wait for confirmation
+       // ═══════════════════════════════════════════════════════════
+       if (rp.phase === "confirming") {
+         const targets = rp.partialConfig.targets ?? [];
+         const dims = rp.partialConfig.dimensions ?? [];
+         const fmts = rp.partialConfig.outputFormat ?? [];
+         const constraints = rp.partialConfig.constraints ?? {};
+ 
+-        const display: Record<string, string> = {
+-          分析场景: rp.partialConfig.analysisType === "product_comparison"
+-            ? "产品横向对比" : (rp.partialConfig.analysisType ?? ""),
+-          竞品列表: targets.map((t: any) => t.name ?? t).join("、"),
+-          对比维度: dims.join("、"),
+-          产物格式: fmts.join("、"),
+-          约束条件: Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : "无",
+-        };
+-
+-        const previewText = Object.entries(display)
+-          .map(([k, v]) => `- **${k}**：${v}`)
+-          .join("\n");
+-
+         // First time entering confirming → emit clarification_asked
+         if (!rp.pendingQuestionType || rp.pendingQuestionType !== "confirm_preview") {
+           rp.pendingQuestionType = "confirm_preview";
+           const displayRound = rp.history.length + 1;
+ 
+-          const agentPrompt = `请确认以下分析配置：\n\n${previewText}\n\n确认无误请回复"确认"，需要修改请说明修改内容。`;
++          const agentPrompt = CONFIG_PREVIEW_PROMPT
++            .replace("{analysisType}", rp.partialConfig.analysisType === "product_comparison" ? "产品横向对比" : (rp.partialConfig.analysisType ?? ""))
++            .replace("{targets}", targets.map((t: any) => t.name ?? t).join("、"))
++            .replace("{dimensions}", dims.join("、"))
++            .replace("{outputFormat}", fmts.join("、"))
++            .replace("{constraints}", Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : "无");
+ 
+           rp.history.push({
+             round: displayRound,
+             questionType: "confirm_preview",
+             agentPrompt,
+             userResponse: "",
+             extractedDelta: {},
+             timestamp: new Date().toISOString(),
+           });
+ 
+@@ -440,20 +435,21 @@ export function createRequirementParsingCap(
+               ...base,
+               payload: {
+                 summary: `解析完成：${config.targets.length} 个竞品，${config.dimensions.length} 个维度`,
+                 config,
+               },
+             });
+ 
+             return { patch: { config, _rpState: null, _userResponse: null }, artifacts: [] };
+           } else {
+             // User wants to modify → back to targets (ROUND_DEFS index 0)
++            rp.history = rp.history.slice(0, 1); // keep only scene_selection
+             rp.phase = "clarification_loop";
+             rp.roundIndex = 0;
+             rp.pendingQuestionType = undefined;
+             rp.modifyTargetIndex = undefined;
+             return { patch: { _rpState: rp, _userResponse: null }, artifacts: [] };
+           }
+         }
+       }
+ 
+       throw new Error(
+diff --git a/backend/capabilities/shared/types.ts b/backend/capabilities/shared/types.ts
+index e2bb65e..3276356 100644
+--- a/backend/capabilities/shared/types.ts
++++ b/backend/capabilities/shared/types.ts
+@@ -66,21 +66,21 @@ export interface AnalysisConstraints {
+   regions?: string[];
+   languages?: string[];
+   maxCompetitors?: number;
+ }
+ 
+ /**
+  * 单轮澄清的定义。每种 analysisType 有一组 ROUND_DEFS。
+  * 所有轮次必填。
+  */
+ export interface ClarificationRoundDef {
+-  questionType: "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
++  questionType: "targets" | "dimensions" | "output_format" | "constraints";
+ }
+ 
+ /**
+  * 单轮澄清对话记录，用于多轮对话的完整溯源。
+  */
+ export interface ClarificationRound {
+   round: number;
+   questionType: "scene_selection" | "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
+   agentPrompt: string;
+   userResponse: string;
+@@ -91,21 +91,20 @@ export interface ClarificationRound {
+ /**
+  * 每种分析场景的澄清轮次序列。
+  * Round 1 (scene_selection) 是固定入口，不在表内。
+  */
+ export const ROUND_DEFS: Record<string, ClarificationRoundDef[]> = {
+   product_comparison: [
+     { questionType: "targets" },
+     { questionType: "dimensions" },
+     { questionType: "output_format" },
+     { questionType: "constraints" },
+-    { questionType: "confirm_preview" },
+   ],
+ };
+ 
+ /**
+  * 需求解析的完整产出。写入 `state.data.config`，是所有下游 Capability 的输入契约。
+  *
+  * @field analysisType - 分析场景类型（Phase 2 固定为 "product_comparison"）
+  * @field targets      - 竞品列表，至少 2 个
+  * @field dimensions   - 对比维度列表
+  * @field outputFormat - 期望产物格式列表

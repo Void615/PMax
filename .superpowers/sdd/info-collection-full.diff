@@ -1,0 +1,1074 @@
+diff --git a/backend/capabilities/information_collection/index.ts b/backend/capabilities/information_collection/index.ts
+index 8bdd7e3..569bc33 100644
+--- a/backend/capabilities/information_collection/index.ts
++++ b/backend/capabilities/information_collection/index.ts
+@@ -1,110 +1,309 @@
+ import type {
+   Capability,
+   CapabilityResult,
+   RuntimeState,
+   RuntimeContext,
+   Tool,
+ } from "../../runtime/index.js";
+-import type { RequirementConfig, RawDataItem } from "../shared/types.js";
++import type { RequirementConfig, RawDataItem, CollectionReport } from "../shared/types.js";
+ import { webSearch } from "../../tools/web_search/skill.js";
+ import { webScrape } from "../../tools/web_scrape/skill.js";
+-import { SEARCH_PLAN_PROMPT } from "./prompts.js";
++import { createCompetitorUrlResolver } from "../../tools/competitor_url_resolver/skill.js";
++import { createSearchPlanner } from "../../tools/search_planner/skill.js";
++import { credibilityScorer } from "../../tools/credibility_scorer/skill.js";
++import { createSufficiencyChecker } from "../../tools/sufficiency_checker/skill.js";
++
++const MAX_COLLECTION_ROUNDS = 2;
+ 
+ export function createInformationCollectionCap(
+   llm: { complete(prompt: string): Promise<string> }
+ ): Capability {
+-  const tools: Tool[] = [webSearch, webScrape];
++  const competitorUrlResolverTool = createCompetitorUrlResolver(llm);
++  const searchPlannerTool = createSearchPlanner(llm);
++  const sufficiencyCheckerTool = createSufficiencyChecker(llm);
++
++  const tools: Tool[] = [
++    webSearch,
++    webScrape,
++    competitorUrlResolverTool,
++    searchPlannerTool,
++    credibilityScorer,
++    sufficiencyCheckerTool,
++  ];
+ 
+   return {
+     id: "information_collection",
+-    description: "按竞品×维度网格采集原始信息，支持多轮分竞品采集",
++    description: "按竞品×维度网格采集原始信息，支持URL发现、多维采集、可信度评分和充分性重采",
+     inputHints: ["config"],
+     outputHints: ["rawData"],
+     requires: ["requirement_parsing"],
+     tools,
+ 
+     async execute(state: RuntimeState, ctx: RuntimeContext): Promise<CapabilityResult> {
+       const config = state.data.config as RequirementConfig;
+       if (!config) {
+         return { patch: {}, artifacts: [] };
+       }
+ 
+       await ctx.emit({
+         uiHint: "node_progress",
+         eventType: "NODE_PROGRESS",
+         payload: { stage: "planning", message: `准备采集 ${config.targets.length} 个竞品 × ${config.dimensions.length} 个维度的信息` },
+       });
+ 
+-      // 1. LLM 生成搜索计划
+-      const searchTool = tools.find(t => t.name === "web_search")!;
++      // ── Step 1: URL discovery for targets without URLs ──
++      await ctx.emit({
++        uiHint: "node_progress",
++        eventType: "NODE_PROGRESS",
++        payload: { stage: "url_discovery", message: "正在解析竞品URL..." },
++      });
++
++      const targetsWithUrls = await Promise.all(
++        config.targets.map(async (target) => {
++          if (target.url) return target; // already has URL
+ 
+-      const planPrompt = SEARCH_PLAN_PROMPT
+-        .replace("{targets}", JSON.stringify(config.targets.map(t => t.name)))
+-        .replace("{dimensions}", JSON.stringify(config.dimensions));
++          const result = await competitorUrlResolverTool.execute(
++            { name: target.name, category: target.category },
++            { traceId: ctx.traceId, runId: ctx.runId }
++          );
++          return { ...target, url: result.url };
++        })
++      );
+ 
+-      const planRaw = await llm.complete(planPrompt);
+-      const jsonMatch = planRaw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, planRaw];
+-      const plan = JSON.parse((jsonMatch[1] ?? planRaw).trim());
++      await ctx.emit({
++        uiHint: "node_progress",
++        eventType: "NODE_PROGRESS",
++        payload: {
++          stage: "url_discovery_complete",
++          message: `URL解析完成: ${targetsWithUrls.map((t) => `${t.name} → ${t.url}`).join(", ")}`,
++        },
++      });
+ 
++      // ── Main collection loop ──
+       const allItems: RawDataItem[] = [];
++      let collectionRounds = 0;
++      let lastSufficiencyResult: { score: number; verdict: string; perDimension: Record<string, any>; suggestions: string[] } | null = null;
++
++      // eslint-disable-next-line no-constant-condition
++      while (true) {
++        collectionRounds++;
++
++        // ── Step 2: Search planning (via tool, NOT bare llm.complete) ──
++        await ctx.emit({
++          uiHint: "node_progress",
++          eventType: "NODE_PROGRESS",
++          payload: { stage: "search_planning", message: `第 ${collectionRounds} 轮: 生成搜索计划...` },
++        });
++
++        const planResult = await searchPlannerTool.execute(
++          {
++            targets: targetsWithUrls.map((t) => ({ name: t.name, url: t.url, category: t.category })),
++            dimensions: config.dimensions,
++            constraints: config.constraints,
++          },
++          { traceId: ctx.traceId, runId: ctx.runId }
++        );
++
++        const plan = planResult as { batches: { queries: { target: string; dimension: string; query: string; searchType: string }[] }[] };
++
++        // ── Step 3: Batch execution ──
++        for (const batch of plan.batches ?? []) {
++          const queries = batch.queries ?? [];
++
++          const batchResults = await Promise.allSettled(
++            queries.map(async (q) => {
++              await ctx.emit({
++                uiHint: "tool_call",
++                eventType: "TOOL_CALL",
++                payload: { toolName: "web_search", params: { query: q.query } },
++              });
++
++              const start = Date.now();
++              const searchRes = await webSearch.execute(
++                { query: q.query, maxResults: 3 },
++                { traceId: ctx.traceId, runId: ctx.runId }
++              );
++
++              await ctx.emit({
++                uiHint: "tool_result",
++                eventType: "TOOL_RESULT",
++                payload: { toolName: "web_search", durationMs: Date.now() - start, result: { query: q.query } },
++              });
++
++              // Pick top-2 URLs from search results
++              const searchItems = searchRes.items ?? [];
++              const topUrls = searchItems.slice(0, 2).filter(
++                (item: any) => item.url && item.url.startsWith("http")
++              );
++
++              // Scrape each URL
++              const scrapedItems = await Promise.allSettled(
++                topUrls.map(async (searchItem: any) => {
++                  await ctx.emit({
++                    uiHint: "tool_call",
++                    eventType: "TOOL_CALL",
++                    payload: { toolName: "web_scrape", params: { url: searchItem.url } },
++                  });
++
++                  const scrapeStart = Date.now();
++                  const scrapeRes = await webScrape.execute(
++                    { url: searchItem.url, maxChars: 8000 },
++                    { traceId: ctx.traceId, runId: ctx.runId }
++                  );
++
++                  await ctx.emit({
++                    uiHint: "tool_result",
++                    eventType: "TOOL_RESULT",
++                    payload: { toolName: "web_scrape", durationMs: Date.now() - scrapeStart, result: { url: searchItem.url } },
++                  });
++
++                  const now = new Date().toISOString();
++
++                  if (scrapeRes.error) {
++                    // Fallback: use search snippet
++                    return {
++                      target: q.target,
++                      dimension: q.dimension,
++                      content: searchItem.snippet ?? "",
++                      sourceUrl: searchItem.url,
++                      sourceTitle: searchItem.title,
++                      retrievedAt: now,
++                      credibility: "low" as const,
++                    };
++                  }
++
++                  return {
++                    target: q.target,
++                    dimension: q.dimension,
++                    content: scrapeRes.content ?? "",
++                    sourceUrl: searchItem.url,
++                    sourceTitle: searchItem.title ?? scrapeRes.title ?? "",
++                    retrievedAt: now,
++                    credibility: "unknown" as const, // will be scored in step 4
++                  };
++                })
++              );
+ 
+-      // 2. 按 batch 执行搜索
+-      for (const batch of (plan.batches ?? [{ queries: [] }])) {
+-        const queries: { target: string; dimension: string; query: string }[] = batch.queries ?? [];
+-
+-        const results = await Promise.allSettled(
+-          queries.map(async (q) => {
+-            await ctx.emit({
+-              uiHint: "tool_call",
+-              eventType: "TOOL_CALL",
+-              payload: { toolName: "web_search", params: { query: q.query } },
+-            });
+-
+-            const start = Date.now();
+-            const res = await searchTool.execute({ query: q.query, maxResults: 3 }, { traceId: ctx.traceId, runId: ctx.runId });
+-
+-            const item: RawDataItem = {
+-              target: q.target,
+-              dimension: q.dimension,
+-              content: res.items?.[0]?.snippet ?? JSON.stringify(res),
+-              sourceUrl: res.items?.[0]?.url ?? "",
+-              sourceTitle: res.items?.[0]?.title,
+-              retrievedAt: new Date().toISOString(),
+-              credibility: "medium",
+-            };
+-
+-            await ctx.emit({
+-              uiHint: "tool_result",
+-              eventType: "TOOL_RESULT",
+-              payload: { toolName: "web_search", durationMs: Date.now() - start, result: { title: item.sourceTitle } },
+-            });
+-
+-            return item;
++              return scrapedItems;
++            })
++          );
++
++          // Flatten and collect
++          for (const result of batchResults) {
++            if (result.status === "fulfilled") {
++              for (const scrapedResult of result.value) {
++                if (scrapedResult.status === "fulfilled") {
++                  allItems.push(scrapedResult.value);
++                }
++              }
++            }
++          }
++        }
++
++        // ── Step 4: Credibility scoring (parallel) ──
++        await ctx.emit({
++          uiHint: "node_progress",
++          eventType: "NODE_PROGRESS",
++          payload: { stage: "credibility_scoring", message: `正在评估 ${allItems.length} 条数据的可信度...` },
++        });
++
++        const scoreResults = await Promise.allSettled(
++          allItems.map(async (item) => {
++            const scoreRes = await credibilityScorer.execute(
++              { url: item.sourceUrl, content: item.content, retrievedAt: item.retrievedAt },
++              { traceId: ctx.traceId, runId: ctx.runId }
++            );
++            return { item, score: scoreRes as { level: string } };
+           })
+         );
+ 
+-        for (const r of results) {
+-          if (r.status === "fulfilled") allItems.push(r.value);
++        for (const result of scoreResults) {
++          if (result.status === "fulfilled") {
++            result.value.item.credibility = (result.value.score.level as RawDataItem["credibility"]) ?? "unknown";
++          }
++        }
++
++        // ── Step 5: Sufficiency check ──
++        await ctx.emit({
++          uiHint: "node_progress",
++          eventType: "NODE_PROGRESS",
++          payload: { stage: "sufficiency_check", message: "正在检查采集充分性..." },
++        });
++
++        const sufficiencyResult = await sufficiencyCheckerTool.execute(
++          {
++            rawDataItems: allItems,
++            dimensions: config.dimensions,
++            targetCount: targetsWithUrls.length,
++          },
++          { traceId: ctx.traceId, runId: ctx.runId }
++        );
++
++        const sufficiency = sufficiencyResult as { score: number; verdict: string; perDimension: Record<string, any>; suggestions: string[] };
++
++        lastSufficiencyResult = sufficiency;
++
++        await ctx.emit({
++          uiHint: "node_progress",
++          eventType: "NODE_PROGRESS",
++          payload: {
++            stage: "sufficiency_result",
++            message: `采集充分性: ${sufficiency.score}/5 (${sufficiency.verdict})`,
++            details: { perDimension: sufficiency.perDimension, suggestions: sufficiency.suggestions },
++          },
++        });
++
++        // If sufficient or max rounds reached, stop
++        if (sufficiency.score >= 3 || collectionRounds >= MAX_COLLECTION_ROUNDS) {
++          break;
+         }
++
++        await ctx.emit({
++          uiHint: "node_progress",
++          eventType: "NODE_PROGRESS",
++          payload: {
++            stage: "recollection",
++            message: `数据不充分 (${sufficiency.score}/5)，开始第 ${collectionRounds + 1} 轮补充采集...`,
++          },
++        });
+       }
+ 
+-      // 3. 完成
+-      const summary = `${allItems.length} 条原始信息，覆盖 ${new Set(allItems.map(i => i.dimension)).size} 个维度`;
+-      await ctx.emit({
+-        uiHint: "node_completed",
+-        eventType: "NODE_COMPLETED",
+-        payload: { summary, itemCount: allItems.length },
+-      });
++      // ── Step 6: Build report and group by dimension ──
++      const perDimension: Record<string, { count: number; credibilityBreakdown: Record<string, number> }> = {};
++      for (const dim of config.dimensions) {
++        perDimension[dim] = { count: 0, credibilityBreakdown: { high: 0, medium: 0, low: 0, unknown: 0 } };
++      }
+ 
+-      // 按 dimension 分组存储
+       const rawData: Record<string, RawDataItem[]> = {};
+       for (const item of allItems) {
+         const key = item.dimension;
+         if (!rawData[key]) rawData[key] = [];
+         rawData[key].push(item);
++
++        if (perDimension[key]) {
++          perDimension[key]!.count++;
++          perDimension[key]!.credibilityBreakdown[item.credibility]++;
++        }
+       }
+ 
++      const totalItems = allItems.length;
++
++      const report: CollectionReport = {
++        totalItems,
++        perDimension,
++        sufficiencyScore: lastSufficiencyResult?.score ?? 1,
++        sufficiencyVerdict: (lastSufficiencyResult?.verdict ?? "insufficient") as "sufficient" | "insufficient",
++        collectionRounds,
++      };
++
++      const summary = `${totalItems} 条原始信息，覆盖 ${Object.keys(rawData).length} 个维度，充分性 ${report.sufficiencyScore}/5 (${report.collectionRounds} 轮采集)`;
++      await ctx.emit({
++        uiHint: "node_completed",
++        eventType: "NODE_COMPLETED",
++        payload: { summary, itemCount: totalItems, report },
++      });
++
+       return { patch: { rawData }, artifacts: [] };
+     },
+   };
+ }
+diff --git a/backend/capabilities/shared/types.ts b/backend/capabilities/shared/types.ts
+index 3276356..95d26f2 100644
+--- a/backend/capabilities/shared/types.ts
++++ b/backend/capabilities/shared/types.ts
+@@ -154,20 +154,51 @@ export interface RawDataItem {
+  * @field items               - 采集到的原始数据条目
+  * @field uncoveredDimensions - 未采集到任何数据的维度
+  * @field summary             - 人类可读的采集概况描述
+  */
+ export interface CollectionResult {
+   items: RawDataItem[];
+   uncoveredDimensions: string[];
+   summary: string;
+ }
+ 
++// ─────────────────────────────────────────────────────────────
++// 信息采集工具类型（information_collection Capability 内部使用）
++// ─────────────────────────────────────────────────────────────
++
++/** 单个搜索查询 */
++export interface SearchQuery {
++  target: string;
++  dimension: string;
++  query: string;
++  searchType: "broad" | "targeted";
++}
++
++/** 一批可并行执行的搜索查询 */
++export interface SearchBatch {
++  queries: SearchQuery[];
++}
++
++/** 搜索计划 */
++export interface SearchPlan {
++  batches: SearchBatch[];
++}
++
++/** 采集报告 */
++export interface CollectionReport {
++  totalItems: number;
++  perDimension: Record<string, { count: number; credibilityBreakdown: Record<string, number> }>;
++  sufficiencyScore: number;
++  sufficiencyVerdict: "sufficient" | "insufficient";
++  collectionRounds: number;
++}
++
+ // ─────────────────────────────────────────────────────────────
+ // 生产方: information_processing
+ // 消费方: analysis_reasoning（优先使用，优于 rawData）
+ // ─────────────────────────────────────────────────────────────
+ 
+ /**
+  * 单条结构化记录。由 information_processing 从 rawData 中提取并归一化后写入 `state.data.structuredData`。
+  *
+  * @field target         - 所属竞品名称
+  * @field dimension      - 所属对比维度
+diff --git a/backend/entry/__tests__/workflow.test.ts b/backend/entry/__tests__/workflow.test.ts
+index 2b32d9e..337535a 100644
+--- a/backend/entry/__tests__/workflow.test.ts
++++ b/backend/entry/__tests__/workflow.test.ts
+@@ -2,37 +2,50 @@
+ 
+ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+ import { createRegistry } from "../workflow.js";
+ import { runWorkflow } from "../../src/workflow/runner.js";
+ import type { RunnerDeps } from "../../src/workflow/runner.js";
+ import type { WorkflowLifecycleEvent, HumanClarification } from "../../src/workflow/events.js";
+ import { GraphRuntime } from "../../runtime/index.js";
+ import type { EventBus } from "../../runtime/index.js";
+ 
+ // mock DDG API（web_search 替换真实实现后需要，避免测试真实网络调用超时）
++// Also provides HTML responses for web_scrape since the capability now scrapes search result URLs.
+ const originalFetch = globalThis.fetch;
+ beforeAll(() => {
+-  globalThis.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) =>
+-    Promise.resolve({
++  globalThis.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) => {
++    const urlStr = typeof _url === "string" ? _url : _url instanceof URL ? _url.href : _url.url;
++    // DDG API requests get JSON
++    if (urlStr.includes("duckduckgo.com")) {
++      return Promise.resolve({
++        ok: true,
++        status: 200,
++        json: async () => ({
++          AbstractText: "测试摘要内容",
++          AbstractURL: "https://example.com",
++          Heading: "测试标题",
++          RelatedTopics: [
++            { Text: "相关话题1 - 描述文本", FirstURL: "https://example.com/1" },
++            { Text: "相关话题2 - 描述文本", FirstURL: "https://example.com/2" },
++          ],
++        }),
++      } as Response);
++    }
++    // All other URLs (web_scrape targets) get fake HTML
++    return Promise.resolve({
+       ok: true,
+       status: 200,
+-      json: async () => ({
+-        AbstractText: "测试摘要内容",
+-        AbstractURL: "https://example.com",
+-        Heading: "测试标题",
+-        RelatedTopics: [
+-          { Text: "相关话题1 - 描述文本", FirstURL: "https://example.com/1" },
+-          { Text: "相关话题2 - 描述文本", FirstURL: "https://example.com/2" },
+-        ],
+-      }),
+-    } as Response)
+-  );
++      headers: new Headers({ "content-type": "text/html; charset=utf-8" }),
++      text: async () => "<html><head><title>测试页面</title></head><body><article><h1>产品功能介绍</h1><p>这是竞品分析测试页面的正文内容，包含丰富的产品功能描述和定价信息。会员价格15元每月，支持去广告、高清视频等高级功能。</p></article></body></html>",
++      json: async () => { throw new Error("Not JSON"); },
++    } as unknown as Response);
++  });
+ });
+ afterAll(() => {
+   globalThis.fetch = originalFetch;
+ });
+ 
+ function createMockLlm() {
+   return {
+     async complete(prompt: string): Promise<string> {
+       // ── Requirement parsing: multi-round prompts ──
+       if (prompt.includes("三种场景")) {
+@@ -66,20 +79,26 @@ function createMockLlm() {
+       if (prompt.includes("搜索计划") || prompt.includes("采集调度器")) {
+         return JSON.stringify({
+           batches: [{
+             queries: [
+               { target: "微博", dimension: "functionality", query: "微博 会员 功能" },
+               { target: "知乎", dimension: "functionality", query: "知乎 盐选 功能" },
+             ],
+           }],
+         });
+       }
++      if (prompt.includes("官方网站或应用商店URL")) {
++        return JSON.stringify({ url: "https://weibo.com", sourceType: "official" });
++      }
++      if (prompt.includes("对比维度统计")) {
++        return JSON.stringify({ suggestions: [] });
++      }
+       if (prompt.includes("数据提取器")) {
+         return JSON.stringify({
+           records: [
+             { attribute: "去广告", value: "支持", confidence: 0.9 },
+             { attribute: "月费价格", value: "15元/月", confidence: 0.85 },
+           ],
+         });
+       }
+       if (prompt.includes("竞品分析师")) {
+         return JSON.stringify({
+diff --git a/backend/tools/competitor_url_resolver/manifest.json b/backend/tools/competitor_url_resolver/manifest.json
+new file mode 100644
+index 0000000..75ce7ff
+--- /dev/null
++++ b/backend/tools/competitor_url_resolver/manifest.json
+@@ -0,0 +1,12 @@
++{
++  "name": "competitor_url_resolver",
++  "description": "根据产品名称和品类查找官方网站或应用商店URL",
++  "parameters": {
++    "type": "object",
++    "properties": {
++      "name": { "type": "string", "description": "产品名称" },
++      "category": { "type": "string", "description": "产品品类（可选）" }
++    },
++    "required": ["name"]
++  }
++}
+diff --git a/backend/tools/competitor_url_resolver/skill.ts b/backend/tools/competitor_url_resolver/skill.ts
+new file mode 100644
+index 0000000..c468f8f
+--- /dev/null
++++ b/backend/tools/competitor_url_resolver/skill.ts
+@@ -0,0 +1,77 @@
++import type { Tool, ToolContext } from "../../runtime/capability/types.js";
++import { webSearch } from "../web_search/skill.js";
++
++interface UrlResolveParams {
++  name: string;
++  category?: string;
++}
++
++interface UrlResolveResult {
++  url: string;
++  sourceType: "official" | "appstore" | "database" | "inferred";
++}
++
++export function createCompetitorUrlResolver(
++  llm: { complete(prompt: string): Promise<string> }
++): Tool {
++  return {
++    name: "competitor_url_resolver",
++    description: "根据产品名称和品类查找官方网站或应用商店URL",
++    parameters: {
++      type: "object",
++      properties: {
++        name: { type: "string", description: "产品名称" },
++        category: { type: "string", description: "产品品类（可选）" },
++      },
++      required: ["name"],
++    },
++    async execute(params: Record<string, any>, ctx: ToolContext): Promise<UrlResolveResult> {
++      const { name, category } = params as unknown as UrlResolveParams;
++
++      // Step 1: Search for the official URL
++      const searchQuery = category
++        ? `${name} ${category} 官网`
++        : `${name} 官网`;
++      const searchResult = await webSearch.execute(
++        { query: searchQuery, maxResults: 5 },
++        ctx
++      );
++
++      // Step 2: Use LLM to pick the most likely official URL from results
++      const candidates = searchResult.items?.map(
++        (item: { url: string; title: string; snippet: string }) =>
++          `URL: ${item.url}\nTitle: ${item.title}\nSnippet: ${item.snippet}`
++      ).join("\n\n") ?? "";
++
++      // Also construct a likely URL pattern
++      const inferredUrl = `https://${name.replace(/\s+/g, "").toLowerCase()}.com`;
++
++      const prompt = `你是竞品分析助手。请根据以下信息判断产品 "{name}" 的官方网站或应用商店URL。
++
++候选搜索结果：
++${candidates || "（无搜索结果）"}
++
++推断URL: ${inferredUrl}
++
++请选择最可能的官方URL。判断标准：
++- 优先选择包含产品名的官网域名（如 xxxx.com）
++- 其次选择知名应用商店页面（如 app Store、Google Play）
++- 再次选择知名数据库（如 Crunchbase、天眼查、企查查）
++- 如果都不可用，使用推断的URL模式
++
++输出 JSON:
++{ "url": "https://...", "sourceType": "official|appstore|database|inferred" }
++
++只输出 JSON。`;
++
++      const raw = await llm.complete(prompt);
++      const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];
++      const parsed = JSON.parse((jsonMatch[1] ?? raw).trim());
++
++      return {
++        url: parsed.url ?? inferredUrl,
++        sourceType: parsed.sourceType ?? "inferred",
++      };
++    },
++  };
++}
+diff --git a/backend/tools/credibility_scorer/manifest.json b/backend/tools/credibility_scorer/manifest.json
+new file mode 100644
+index 0000000..27c2f5e
+--- /dev/null
++++ b/backend/tools/credibility_scorer/manifest.json
+@@ -0,0 +1,13 @@
++{
++  "name": "credibility_scorer",
++  "description": "根据来源域名、时效性和内容完整性评估信息可信度",
++  "parameters": {
++    "type": "object",
++    "properties": {
++      "url": { "type": "string" },
++      "content": { "type": "string" },
++      "retrievedAt": { "type": "string" }
++    },
++    "required": ["url", "content", "retrievedAt"]
++  }
++}
+diff --git a/backend/tools/credibility_scorer/skill.ts b/backend/tools/credibility_scorer/skill.ts
+new file mode 100644
+index 0000000..01631d1
+--- /dev/null
++++ b/backend/tools/credibility_scorer/skill.ts
+@@ -0,0 +1,131 @@
++import type { Tool, ToolContext } from "../../runtime/capability/types.js";
++
++interface CredibilityParams {
++  url: string;
++  content: string;
++  retrievedAt: string;
++}
++
++interface CredibilityResult {
++  score: number;
++  level: "high" | "medium" | "low" | "unknown";
++  factors: {
++    domain: number;
++    freshness: number;
++    contentLength: number;
++  };
++}
++
++// Domain classification constants
++const OFFICIAL_DOMAINS = [
++  ".gov.cn", ".gov", ".edu.cn", ".edu",
++];
++
++const MEDIA_DOMAINS = [
++  "techcrunch.com", "36kr.com", "geekpark.net", "theverge.com",
++  "wired.com", "arstechnica.com", "infoq.cn", "sspai.com",
++  "ifanr.com", "pingwest.com", "techweb.com.cn", "donews.com",
++  "ithome.com", "cnbeta.com", "huxiu.com", "tmtpost.com",
++];
++
++const UGC_DOMAINS = [
++  "zhihu.com", "reddit.com", "v2ex.com", "tieba.baidu.com",
++  "douban.com", "weibo.com", "jianshu.com", "csdn.net",
++  "juejin.cn", "segmentfault.com", "oschina.net",
++];
++
++function extractDomain(url: string): string {
++  try {
++    return new URL(url).hostname.toLowerCase();
++  } catch {
++    return url.toLowerCase();
++  }
++}
++
++function classifyDomain(hostname: string, content: string): number {
++  // Official: matches well-known official/edu/gov
++  for (const d of OFFICIAL_DOMAINS) {
++    if (hostname.endsWith(d)) return 3;
++  }
++
++  // Media: known tech media
++  for (const d of MEDIA_DOMAINS) {
++    if (hostname.includes(d)) return 2;
++  }
++
++  // UGC: community/forum
++  for (const d of UGC_DOMAINS) {
++    if (hostname.includes(d)) return 1;
++  }
++
++  // Heuristic: if content mentions "官网" frequently, might be official
++  const officialKeywordCount = (content.match(/官网|官方网站|official site/gi) ?? []).length;
++  if (officialKeywordCount >= 2) return 2;
++
++  return 1; // default low
++}
++
++function extractYear(content: string): number | null {
++  // Try to find a year in the content like "2024", "2025", "2026"
++  const yearMatch = content.match(/\b(20\d{2})\b/);
++  if (yearMatch) return parseInt(yearMatch[1], 10);
++  return null;
++}
++
++function computeFreshnessPenalty(content: string, retrievedAt: string): number {
++  const currentYear = new Date().getFullYear();
++  const contentYear = extractYear(content);
++
++  if (!contentYear) return 0; // can't determine, no penalty
++
++  const age = currentYear - contentYear;
++  if (age <= 0.5) return 0;   // ≤6 months — no penalty
++  if (age <= 1) return -1;     // ≤12 months
++  if (age <= 2) return -1;     // ≤2 years
++  return -2;                    // >2 years
++}
++
++function computeContentPenalty(content: string): number {
++  if (content.length < 200) return -1;
++  return 0;
++}
++
++export const credibilityScorer: Tool = {
++  name: "credibility_scorer",
++  description: "根据来源域名、时效性和内容完整性评估信息可信度",
++  parameters: {
++    type: "object",
++    properties: {
++      url: { type: "string" },
++      content: { type: "string" },
++      retrievedAt: { type: "string" },
++    },
++    required: ["url", "content", "retrievedAt"],
++  },
++  async execute(params: Record<string, any>, _ctx: ToolContext): Promise<CredibilityResult> {
++    const { url, content, retrievedAt } = params as unknown as CredibilityParams;
++    const hostname = extractDomain(url);
++
++    const domainScore = classifyDomain(hostname, content);
++    const freshnessPenalty = computeFreshnessPenalty(content, retrievedAt);
++    const contentPenalty = computeContentPenalty(content);
++
++    const score = Math.max(0, domainScore + freshnessPenalty + contentPenalty);
++
++    let level: CredibilityResult["level"];
++    if (score >= 3) level = "high";
++    else if (score >= 2) level = "medium";
++    else if (score >= 1) level = "low";
++    else level = "unknown";
++
++    return {
++      score,
++      level,
++      factors: {
++        domain: domainScore,
++        freshness: freshnessPenalty,
++        contentLength: contentPenalty,
++      },
++    };
++  },
++};
+diff --git a/backend/tools/search_planner/manifest.json b/backend/tools/search_planner/manifest.json
+new file mode 100644
+index 0000000..20479f6
+--- /dev/null
++++ b/backend/tools/search_planner/manifest.json
+@@ -0,0 +1,13 @@
++{
++  "name": "search_planner",
++  "description": "将竞品×维度网格分解为分批搜索计划",
++  "parameters": {
++    "type": "object",
++    "properties": {
++      "targets": { "type": "array", "items": { "type": "object" } },
++      "dimensions": { "type": "array", "items": { "type": "string" } },
++      "constraints": { "type": "object" }
++    },
++    "required": ["targets", "dimensions"]
++  }
++}
+diff --git a/backend/tools/search_planner/prompts.ts b/backend/tools/search_planner/prompts.ts
+new file mode 100644
+index 0000000..6557f5b
+--- /dev/null
++++ b/backend/tools/search_planner/prompts.ts
+@@ -0,0 +1,22 @@
++export const SEARCH_PLANNER_PROMPT = `你是一个竞品信息采集调度器。基于以下需求生成搜索计划。
++
++竞品列表：{targets}
++对比维度：{dimensions}{extraContext}
++
++对每个（竞品，维度）组合生成 1-2 个搜索 query。
++识别哪些 query 可以并行执行（彼此无数据依赖的放在同一个 batch）。
++
++输出 JSON:
++{
++  "batches": [
++    { "queries": [{ "target": "竞品A", "dimension": "功能", "query": "竞品A 功能特性 会员权益", "searchType": "broad" }] }
++  ]
++}
++
++规则：
++- 搜索 query 要具体，包含竞品名称和维度关键词
++- pricing 维度的搜索使用 "targeted" searchType，其他维度使用 "broad"
++- 优先搜索官方来源（官网、应用商店页面）
++- 每个 batch 内的 queries 可并行，batch 之间串行
++
++只输出 JSON。`;
+diff --git a/backend/tools/search_planner/skill.ts b/backend/tools/search_planner/skill.ts
+new file mode 100644
+index 0000000..6e3a88a
+--- /dev/null
++++ b/backend/tools/search_planner/skill.ts
+@@ -0,0 +1,69 @@
++import type { Tool, ToolContext } from "../../runtime/capability/types.js";
++import { SEARCH_PLANNER_PROMPT } from "./prompts.js";
++
++interface SearchPlannerParams {
++  targets: { name: string; url?: string; category?: string }[];
++  dimensions: string[];
++  constraints?: Record<string, any>;
++}
++
++interface SearchQuery {
++  target: string;
++  dimension: string;
++  query: string;
++  searchType: "broad" | "targeted";
++}
++
++interface SearchBatch {
++  queries: SearchQuery[];
++}
++
++interface SearchPlan {
++  batches: SearchBatch[];
++}
++
++export function createSearchPlanner(
++  llm: { complete(prompt: string): Promise<string> }
++): Tool {
++  return {
++    name: "search_planner",
++    description: "将竞品×维度网格分解为分批搜索计划",
++    parameters: {
++      type: "object",
++      properties: {
++        targets: { type: "array", items: { type: "object" } },
++        dimensions: { type: "array", items: { type: "string" } },
++        constraints: { type: "object" },
++      },
++      required: ["targets", "dimensions"],
++    },
++    async execute(params: Record<string, any>, _ctx: ToolContext): Promise<SearchPlan> {
++      const { targets, dimensions, constraints } = params as unknown as SearchPlannerParams;
++
++      const targetNames = targets.map((t) => t.name);
++      const extraContext = constraints
++        ? `\n分析约束：${JSON.stringify(constraints)}`
++        : "";
++
++      const prompt = SEARCH_PLANNER_PROMPT
++        .replace("{targets}", JSON.stringify(targetNames))
++        .replace("{dimensions}", JSON.stringify(dimensions))
++        .replace("{extraContext}", extraContext);
++
++      const raw = await llm.complete(prompt);
++      const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];
++      const plan: SearchPlan = JSON.parse((jsonMatch[1] ?? raw).trim());
++
++      // Sanitize: ensure each query has required fields with defaults
++      for (const batch of plan.batches ?? []) {
++        for (const q of batch.queries ?? []) {
++          if (!q.searchType) {
++            q.searchType = q.dimension === "pricing" ? "targeted" : "broad";
++          }
++        }
++      }
++
++      return plan;
++    },
++  };
++}
+diff --git a/backend/tools/sufficiency_checker/manifest.json b/backend/tools/sufficiency_checker/manifest.json
+new file mode 100644
+index 0000000..3ab9be1
+--- /dev/null
++++ b/backend/tools/sufficiency_checker/manifest.json
+@@ -0,0 +1,13 @@
++{
++  "name": "sufficiency_checker",
++  "description": "评估采集充分性，1-5评分并给出补充建议",
++  "parameters": {
++    "type": "object",
++    "properties": {
++      "rawDataItems": { "type": "array", "items": { "type": "object" } },
++      "dimensions": { "type": "array", "items": { "type": "string" } },
++      "targetCount": { "type": "number" }
++    },
++    "required": ["rawDataItems", "dimensions", "targetCount"]
++  }
++}
+diff --git a/backend/tools/sufficiency_checker/skill.ts b/backend/tools/sufficiency_checker/skill.ts
+new file mode 100644
+index 0000000..26b2278
+--- /dev/null
++++ b/backend/tools/sufficiency_checker/skill.ts
+@@ -0,0 +1,151 @@
++import type { Tool, ToolContext } from "../../runtime/capability/types.js";
++
++interface RawDataItem {
++  target: string;
++  dimension: string;
++  content: string;
++  sourceUrl: string;
++  credibility: string;
++}
++
++interface SufficiencyParams {
++  rawDataItems: RawDataItem[];
++  dimensions: string[];
++  targetCount: number;
++}
++
++interface PerDimensionInfo {
++  itemCount: number;
++  highCredCount: number;
++  coverage: number; // 0-1
++}
++
++interface SufficiencyResult {
++  score: number; // 1-5
++  verdict: "sufficient" | "insufficient";
++  perDimension: Record<string, PerDimensionInfo>;
++  suggestions: string[];
++}
++
++function computePerDimension(
++  items: RawDataItem[],
++  dimensions: string[],
++  targetCount: number
++): Record<string, PerDimensionInfo> {
++  const result: Record<string, PerDimensionInfo> = {};
++  for (const dim of dimensions) {
++    const dimItems = items.filter((i) => i.dimension === dim);
++    const highCred = dimItems.filter((i) => i.credibility === "high").length;
++    const uniqueTargets = new Set(dimItems.map((i) => i.target)).size;
++    result[dim] = {
++      itemCount: dimItems.length,
++      highCredCount: highCred,
++      coverage: targetCount > 0 ? uniqueTargets / targetCount : 0,
++    };
++  }
++  return result;
++}
++
++function computeScore(
++  perDim: Record<string, PerDimensionInfo>,
++  dimensions: string[],
++  items: RawDataItem[]
++): number {
++  let score = 5;
++
++  for (const dim of dimensions) {
++    const info = perDim[dim];
++    if (!info) {
++      score -= 1;
++      continue;
++    }
++    // High credibility items < 3 per dimension
++    if (info.highCredCount < 3) score -= 1;
++    // Coverage < 80%
++    if (info.coverage < 0.8) score -= 1;
++    // Coverage < 50%
++    if (info.coverage < 0.5) score -= 1;
++    // Pricing dimension has zero official sources
++    if (dim === "pricing") {
++      const pricingItems = items.filter(
++        (i) => i.dimension === "pricing" && i.credibility === "high"
++      );
++      if (pricingItems.length === 0) score -= 1;
++    }
++  }
++
++  return Math.max(1, score);
++}
++
++export function createSufficiencyChecker(
++  llm: { complete(prompt: string): Promise<string> }
++): Tool {
++  return {
++    name: "sufficiency_checker",
++    description: "评估采集充分性，1-5评分并给出补充建议",
++    parameters: {
++      type: "object",
++      properties: {
++        rawDataItems: { type: "array", items: { type: "object" } },
++        dimensions: { type: "array", items: { type: "string" } },
++        targetCount: { type: "number" },
++      },
++      required: ["rawDataItems", "dimensions", "targetCount"],
++    },
++    async execute(params: Record<string, any>, _ctx: ToolContext): Promise<SufficiencyResult> {
++      const { rawDataItems, dimensions, targetCount } = params as unknown as SufficiencyParams;
++
++      const perDimension = computePerDimension(rawDataItems, dimensions, targetCount);
++      const score = computeScore(perDimension, dimensions, rawDataItems);
++
++      // Use LLM to generate per-dimension suggestions
++      const dimSummary = dimensions
++        .map((d) => {
++          const info = perDimension[d];
++          return `${d}: ${info?.itemCount ?? 0} 条, 高可信 ${info?.highCredCount ?? 0} 条, 覆盖率 ${Math.round((info?.coverage ?? 0) * 100)}%`;
++        })
++        .join("\n");
++
++      const prompt = `评估以下竞品信息采集的充分性。
++
++对比维度统计：
++${dimSummary}
++竞品数量：${targetCount}
++规则评分：${score}/5
++
++对于每条维度，如果数据不足（覆盖率<80%或高可信条目<3），请给出具体的补充搜索建议。
++建议专注于缺失的竞品或维度。
++
++输出 JSON:
++{ "suggestions": ["建议1", "建议2", ...] }
++
++只输出 JSON。`;
++
++      let suggestions: string[] = [];
++      try {
++        const raw = await llm.complete(prompt);
++        const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];
++        const parsed = JSON.parse((jsonMatch[1] ?? raw).trim());
++        suggestions = parsed.suggestions ?? [];
++      } catch {
++        // LLM failed — use rule-based fallback
++        for (const dim of dimensions) {
++          const info = perDimension[dim];
++          if (info && info.coverage < 0.8) {
++            suggestions.push(`补充${dim}维度的竞品数据，当前覆盖率仅${Math.round(info.coverage * 100)}%`);
++          }
++          if (info && info.highCredCount < 3) {
++            suggestions.push(`${dim}维度高可信来源不足（当前${info.highCredCount}条），建议搜索官方来源`);
++          }
++        }
++      }
++
++      return {
++        score,
++        verdict: score >= 3 ? "sufficient" : "insufficient",
++        perDimension,
++        suggestions,
++      };
++    },
++  };
++}

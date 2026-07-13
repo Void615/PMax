@@ -277,3 +277,84 @@
   - 新建：docs/superpowers/plans/2026-07-11-web-search-real-impl.md
 - 副作用：web_search / web_scrape 现在发起真实 HTTP 请求，测试环境中需 mock global.fetch
 - 其他信息：分支 feat/p2-tools-implements，Commits d8fdeac..7a55a9b（8 个）
+
+## 2026-07-13 16:18
+- 概述：重构 requirement_parsing Capability 为 ROUND_DEFS 驱动的多轮澄清对话
+- 详细描述：
+  1. 新增 ClarificationRound、ClarificationRoundDef 类型和 ROUND_DEFS 轮次定义表（shared/types.ts）
+  2. UiHint 新增 clarification_asked 和 quality_warning 两种事件提示（bus/types.ts）
+  3. 新增 clarification.required / clarification.provided 生命周期事件和 HumanClarification 类型（events.ts）
+  4. 新增 7 个 per-round 澄清 prompt 模板（requirement_parsing/prompts.ts）
+  5. requirement_parsing 完全重写为三阶段状态机（scene_selection → clarification_loop → confirming），轮次序列由 ROUND_DEFS[analysisType] 驱动，不硬编码轮次数
+  6. runner.ts while 循环新增 intra-node clarification 暂停/恢复机制（检测 _rpState → emit clarification.required → 暂停等用户输入 → fold clarification.provided → continue 重新进入同一节点）
+  7. WorkflowsService 新增 submitClarification / waitForHumanClarification（Redis pub/sub on workflow:{id}:clarification channel）
+  8. WorkflowsController 新增 POST /:id/clarification 端点
+  9. 更新 E2E 测试支持 6 轮 auto-clarification 回复
+  10. 新增 clarification 单元测试 4 个用例（首轮场景选择、完整 6 轮流程、回跳修改、幂等完成状态）
+  11. 设计文档同步：docs/capabilities_design/ 新增 DESIGN.md（概要）、CAPABILITY_WORKFLOW_SPEC_P1/P2.md（详细工作流）、TOOL_SPEC.md（19 个 Tool 规格）；docs/UIHints/ 新增 UIHINT_SPEC.md（事件-前端组件映射）
+  12. 全量 80/80 测试通过，TS 编译零新增错误
+- 影响的文件：
+  - 新建：backend/capabilities/requirement_parsing/__tests__/clarification.test.ts
+  - 新建：docs/capabilities_design/DESIGN.md、CAPABILITY_WORKFLOW_SPEC_P1.md、CAPABILITY_WORKFLOW_SPEC_P2.md、TOOL_SPEC.md
+  - 新建：docs/UIHints/UIHINT_SPEC.md
+  - 新建：docs/superpowers/plans/2026-07-13-requirement-parsing-rework.md
+  - 修改：backend/capabilities/shared/types.ts（ClarificationRound 等新类型 + ROUND_DEFS）
+  - 修改：backend/runtime/bus/types.ts（UiHint ×2）
+  - 修改：backend/src/workflow/events.ts（WorkflowLifecycleEvent ×2 + HumanClarification + fold 分支）
+  - 修改：backend/src/workflow/runner.ts（RunnerDeps 扩展 + clarification 暂停循环）
+  - 修改：backend/capabilities/requirement_parsing/index.ts（完全重写）
+  - 修改：backend/capabilities/requirement_parsing/prompts.ts（单 prompt → 7 个 per-round prompts）
+  - 修改：backend/src/api/workflows/workflows.service.ts（submitClarification + waitForHumanClarification）
+  - 修改：backend/src/api/workflows/workflows.controller.ts（/:id/clarification 端点）
+  - 修改：backend/entry/__tests__/workflow.test.ts（适配 6 轮 auto-clarification）
+  - 修改：backend/vitest.config.ts（include capabilities/** tests）
+- 副作用：runner.ts 的 while 循环新增 _rpState 检测分支，仅当 Capability 产出 _rpState 时触发，不影响其他 Capability 的正常路由暂停流程
+- 其他信息：分支 feat/capability-workflow-implement，Commits 7ec2114..d30c112（8 个）
+
+## 2026-07-13 17:24
+- 概述：完成全部 5 个 Capability 的 Tool 化重构
+- 详细描述：
+  **information_collection 重构（3 commits）：**
+  1. 新增 4 个 Tool：competitor_url_resolver（URL 发现）、search_planner（搜索计划）、credibility_scorer（可信度评分）、sufficiency_checker（充分性检查）
+  2. Capability 重写：移除 llm.complete() 裸调，web_scrape 正式接入（搜索→Top-2 URL→全文抓取），最多 2 轮采集循环
+  3. 清理旧的 SEARCH_PLAN_PROMPT / SUFFICIENCY_PROMPT 死代码
+
+  **information_processing 重构（3 commits）：**
+  1. 改写 2 个已有 Tool（pricing_normalizer、feature_extractor）统一为 records 返回格式 + 新增 2 个 Tool（entity_resolver 实体对齐、conflict_detector 冲突检测）
+  2. StructuredRecord 新增 status 字段，ProcessingResult 新增 coverageMatrix/conflictCount/conflicts，新增 ConflictReport 类型
+  3. Capability 重写：按维度路由提取 → 实体对齐 → 冲突检测 → 覆盖矩阵
+
+  **analysis_reasoning 重构（3 commits）：**
+  1. 扩展 matrix_builder/swot_generator 参数（dimensions/coverageContext/confidencePenalty 等）+ 新增 2 个 Tool（insight_extractor 差异化洞察、comparison_summarizer 综合摘要）
+  2. 新增 Insight 类型，AnalysisResult 扩展 insights/analysisReport 字段
+  3. Capability 重写：数据质量预检（不均衡/冲突/降级）→ 4 个 Tool 全链路，零 llm.complete() 裸调
+
+  **artifact_generation 重构（2 commits）：**
+  1. 新增 source_map_builder Tool（纯规则，无 LLM），SourceMapEntry 新增 credibility 字段
+  2. Artifact.type 新增 "insight_report" 和 "report"，OutputFormat 新增 "insight_report"
+  3. Capability 重写：溯源链构建 → 按 outputFormat 路由（table_composer / SWOT 模板 / insight 模板 / markdown_renderer），markdown_renderer 正式接入
+  4. 删除 source_map.ts（逻辑迁移至 Tool）
+
+  全量 80/80 测试通过，TS 编译零新增错误。
+- 影响的文件：
+  - 新建：backend/tools/competitor_url_resolver/、backend/tools/search_planner/、backend/tools/credibility_scorer/、backend/tools/sufficiency_checker/（各含 manifest.json + skill.ts + prompts.ts，credibility_scorer 无 prompts.ts）
+  - 新建：backend/tools/entity_resolver/、backend/tools/conflict_detector/（各含 manifest.json + skill.ts + prompts.ts）
+  - 新建：backend/tools/insight_extractor/、backend/tools/comparison_summarizer/（各含 manifest.json + skill.ts + prompts.ts）
+  - 新建：backend/tools/source_map_builder/（manifest.json + skill.ts）
+  - 新建：backend/tools/matrix_builder/prompts.ts、backend/tools/swot_generator/prompts.ts、backend/tools/pricing_normalizer/prompts.ts、backend/tools/feature_extractor/prompts.ts
+  - 修改：backend/capabilities/shared/types.ts（SearchQuery/SearchBatch/SearchPlan/CollectionReport/Insight/ConflictReport 类型；StructuredRecord.status、ProcessingResult 扩展、AnalysisResult 扩展、Artifact.type 扩展、OutputFormat 扩展、SourceMapEntry.credibility）
+  - 修改：backend/capabilities/information_collection/index.ts（完全重写）
+  - 修改：backend/capabilities/information_collection/prompts.ts（清理为占位文件）
+  - 修改：backend/capabilities/information_processing/index.ts（完全重写）
+  - 修改：backend/capabilities/analysis_reasoning/index.ts（完全重写）
+  - 修改：backend/capabilities/analysis_reasoning/prompts.ts（清理为占位文件）
+  - 修改：backend/capabilities/artifact_generation/index.ts（完全重写）
+  - 删除：backend/capabilities/artifact_generation/source_map.ts
+  - 修改：backend/tools/pricing_normalizer/skill.ts + manifest.json（参数/返回格式统一）
+  - 修改：backend/tools/feature_extractor/skill.ts + manifest.json（参数/返回格式统一）
+  - 修改：backend/tools/matrix_builder/skill.ts + manifest.json（参数扩展）
+  - 修改：backend/tools/swot_generator/skill.ts + manifest.json（参数扩展）
+  - 修改：backend/tools/table_composer/skill.ts（highlights 参数）
+  - 修改：backend/entry/__tests__/workflow.test.ts（mock LLM 适配所有新 Tool）
+- 副作用：全部 5 个 Capability 的 execute() 均不再包含任何 llm.complete() 裸调，所有 LLM 调用通过 Tool.execute() 完成
+- 其他信息：分支 feat/capability-workflow-implement，Commits b647b99..e230b52（12 个），累计 20 commits

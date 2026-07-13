@@ -1,0 +1,178 @@
+diff --git a/backend/capabilities/shared/types.ts b/backend/capabilities/shared/types.ts
+index b7a7a35..e2bb65e 100644
+--- a/backend/capabilities/shared/types.ts
++++ b/backend/capabilities/shared/types.ts
+@@ -61,37 +61,72 @@ export type OutputFormat = "comparison_matrix" | "swot" | "feature_list" | "repo
+  * @field languages     - 限定信息来源语言
+  * @field maxCompetitors - 最多分析的竞品数量上限
+  */
+ export interface AnalysisConstraints {
+   timeRange?: { from?: string; to?: string };
+   regions?: string[];
+   languages?: string[];
+   maxCompetitors?: number;
+ }
+ 
++/**
++ * 单轮澄清的定义。每种 analysisType 有一组 ROUND_DEFS。
++ * 所有轮次必填。
++ */
++export interface ClarificationRoundDef {
++  questionType: "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
++}
++
++/**
++ * 单轮澄清对话记录，用于多轮对话的完整溯源。
++ */
++export interface ClarificationRound {
++  round: number;
++  questionType: "scene_selection" | "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
++  agentPrompt: string;
++  userResponse: string;
++  extractedDelta: Record<string, any>;
++  timestamp: string;
++}
++
++/**
++ * 每种分析场景的澄清轮次序列。
++ * Round 1 (scene_selection) 是固定入口，不在表内。
++ */
++export const ROUND_DEFS: Record<string, ClarificationRoundDef[]> = {
++  product_comparison: [
++    { questionType: "targets" },
++    { questionType: "dimensions" },
++    { questionType: "output_format" },
++    { questionType: "constraints" },
++    { questionType: "confirm_preview" },
++  ],
++};
++
+ /**
+  * 需求解析的完整产出。写入 `state.data.config`，是所有下游 Capability 的输入契约。
+  *
+  * @field analysisType - 分析场景类型（Phase 2 固定为 "product_comparison"）
+  * @field targets      - 竞品列表，至少 2 个
+  * @field dimensions   - 对比维度列表
+  * @field outputFormat - 期望产物格式列表
+  * @field constraints  - 可选约束条件
+  * @field userInput    - 保留原始用户输入文本
+  */
+ export interface RequirementConfig {
+   analysisType: "product_comparison";
+   targets: Target[];
+   dimensions: Dimension[];
+   outputFormat: OutputFormat[];
+   constraints: AnalysisConstraints;
+   userInput: string;
++  clarificationHistory: ClarificationRound[];
+ }
+ 
+ // ─────────────────────────────────────────────────────────────
+ // 生产方: information_collection
+ // 消费方: information_processing, analysis_reasoning,
+ //         artifact_generation (source_map)
+ // ─────────────────────────────────────────────────────────────
+ 
+ /**
+  * 单条原始采集数据。由 information_collection 搜索产生，按 dimension 分组后写入 `state.data.rawData`。
+diff --git a/backend/runtime/bus/types.ts b/backend/runtime/bus/types.ts
+index 4443bc4..cf97c1d 100644
+--- a/backend/runtime/bus/types.ts
++++ b/backend/runtime/bus/types.ts
+@@ -2,21 +2,23 @@ export type UiHint =
+   | "tool_call"
+   | "tool_result"
+   | "tool_error"
+   | "llm_stream"
+   | "node_progress"
+   | "routing_decision"
+   | "workflow_paused"
+   | "node_completed"
+   | "workflow_complete"
+   | "workflow_failed"
+-  | "degradation_notice";
++  | "degradation_notice"
++  | "clarification_asked"
++  | "quality_warning";
+ 
+ export interface WorkflowEvent {
+   traceId: string;
+   parentTraceId?: string;
+   eventType: string;
+   uiHint: UiHint;
+   nodeId: string;
+   workflowId: string;
+   runId: string;
+   payload: Record<string, any>;
+diff --git a/backend/src/workflow/events.ts b/backend/src/workflow/events.ts
+index 54898ed..9b96371 100644
+--- a/backend/src/workflow/events.ts
++++ b/backend/src/workflow/events.ts
+@@ -1,30 +1,37 @@
+ // backend/src/workflow/events.ts
+ 
+ import type { CapabilityRegistry } from "../../runtime/index.js";
+ import type { RuntimeState, ExecutionStep } from "../../runtime/index.js";
+ import type { RouteSuggestion } from "../../runtime/index.js";
+ 
+ export type WorkflowLifecycleEvent =
+   | { type: "node.executed";      nodeId: string; iteration: number; outputKeys: string[] }
+   | { type: "route.required";     completedNode: string; suggestions: RouteSuggestion[] }
++  | { type: "clarification.required"; nodeId: string; round: number; questionType: string; agentPrompt: string }
++  | { type: "clarification.provided"; nodeId: string; round: number; userResponse: string; extractedDelta: Record<string, any> }
+   | { type: "human.continued";    targetNode: string }
+   | { type: "human.backjumped";   targetNode: string }
+   | { type: "workflow.completed" }
+   | { type: "workflow.failed";    error: string }
+   | { type: "workflow.cancelled" };
+ 
+ export interface HumanDecision {
+   targetNode: string;
+   action: "continue" | "backjump";
+ }
+ 
++export interface HumanClarification {
++  round: number;
++  userResponse: string;
++}
++
+ /**
+  * fold — 纯函数投影。
+  * 输入当前状态 + 一个事件 + Registry，返回新状态。
+  */
+ export function fold(
+   state: RuntimeState,
+   event: WorkflowLifecycleEvent,
+   registry: CapabilityRegistry
+ ): RuntimeState {
+   switch (event.type) {
+@@ -68,20 +75,29 @@ export function fold(
+         ...state,
+         data: newData,
+         control: {
+           ...state.control,
+           currentNode: event.targetNode,
+           executionPath: state.control.executionPath.slice(0, idx + 1),
+         },
+       };
+     }
+ 
++    case "clarification.required":
++      return state;
++
++    case "clarification.provided":
++      return {
++        ...state,
++        data: { ...state.data, _userResponse: event.userResponse },
++      };
++
+     case "human.continued":
+       return {
+         ...state,
+         control: { ...state.control, currentNode: event.targetNode },
+       };
+ 
+     // route.required / workflow.completed / failed / cancelled — 不改 state
+     default:
+       return state;
+   }

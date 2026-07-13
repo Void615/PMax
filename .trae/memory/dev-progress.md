@@ -1,6 +1,6 @@
 # PMax 开发进度
 
-> 最后更新：2026-07-08 20:11（HITL 收尾）
+> 最后更新：2026-07-13 17:24（全部 5 个 Capability Tool 化重构完成）
 
 ## 开发阶段与目标
 
@@ -38,10 +38,11 @@ Phase 2
 
 **2.1 Capability 实现**（按数据流顺序）：
 
-- [x] **P2.1.1 需求解析 Capability**：解析用户输入的分析需求，提取竞品列表、对比维度、产物格式等结构化参数。产出：`config.competitors[]`, `config.dimensions[]`, `config.outputFormat`。
-- [x] **P2.1.2 信息采集 Capability**：基于竞品列表 + 对比维度，调用搜索/爬取 Tools 采集原始信息。产出：`rawData.{competitor}.{dimension}[]`。
-- [x] **P2.1.3 分析对比 Capability**：对采集数据进行维度化对比分析，LLM 驱动的归纳和差异识别。产出：`feature_matrix`, `swot_matrix`。
-- [x] **P2.1.4 产物生成 Capability**：将分析结果格式化为最终产物（Markdown 表格 / JSON / 可导出格式）。产出：`artifacts[]`。
+- [x] **P2.1.1 需求解析 Capability**：🔧 已重构为 ROUND_DEFS 驱动的多轮澄清对话。
+- [x] **P2.1.2 信息采集 Capability**：🔧 已重构为 Tool 编排模式（URL发现→搜索计划→采集→可信度→充分性循环）。产出：`rawData.{dimension}[]`。
+- [x] **P2.1.3 信息处理 Capability**：🔧 已重构为 Tool 编排模式（维度路由→提取→实体对齐→冲突检测→覆盖矩阵）。产出：`structuredData.{dimension}[]`。
+- [x] **P2.1.4 分析推理 Capability**：🔧 已重构为 Tool 编排模式（数据预检→对比矩阵→SWOT→洞察→摘要）。产出：`analysisResults`。
+- [x] **P2.1.5 产物生成 Capability**：🔧 已重构为 Tool 编排模式（溯源链→按格式路由渲染）。产出：`artifacts[]`。
 
 **2.2 Tools 实现**（Capability 依赖的工具集）：
 
@@ -117,5 +118,5 @@ Phase 2
 | 阶段 | 状态 | 完成度 |
 |------|------|--------|
 | Phase 1 | ✅ 完成 | 100%（Runtime v2 + 5 节点通用工作流 + E2E 测试全部通过） |
-| Phase 2 | 进行中 | ~85%（8 个 Tools 全部完成，5/5 Capability 全部实现，后端骨架 10/10 Task 全部完成，HITL 人在回路闭环（事件溯源 + 暂停/唤醒 + 回跳），后端集成完成，**待前端开发（P2.5.1-P2.5.5）**） |
+| Phase 2 | 进行中 | ~92%（5/5 Capability 全部实现并完成 Tool 化重构，**所有 LLM 调用通过 Tool**，后端骨架 10/10 Task 全部完成，HITL 人在回路闭环，CLI 端点已适配，**待前端开发（P2.5.1-P2.5.5）**） |
 | Phase 3 | 未开始 | 0% |

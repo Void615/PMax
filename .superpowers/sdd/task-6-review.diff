@@ -1,0 +1,186 @@
+diff --git a/backend/entry/__tests__/workflow.test.ts b/backend/entry/__tests__/workflow.test.ts
+index 6cbb97b..2b32d9e 100644
+--- a/backend/entry/__tests__/workflow.test.ts
++++ b/backend/entry/__tests__/workflow.test.ts
+@@ -1,17 +1,17 @@
+ // backend/entry/__tests__/workflow.test.ts
+ 
+ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+ import { createRegistry } from "../workflow.js";
+ import { runWorkflow } from "../../src/workflow/runner.js";
+ import type { RunnerDeps } from "../../src/workflow/runner.js";
+-import type { WorkflowLifecycleEvent } from "../../src/workflow/events.js";
++import type { WorkflowLifecycleEvent, HumanClarification } from "../../src/workflow/events.js";
+ import { GraphRuntime } from "../../runtime/index.js";
+ import type { EventBus } from "../../runtime/index.js";
+ 
+ // mock DDG API（web_search 替换真实实现后需要，避免测试真实网络调用超时）
+ const originalFetch = globalThis.fetch;
+ beforeAll(() => {
+   globalThis.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) =>
+     Promise.resolve({
+       ok: true,
+       status: 200,
+@@ -27,29 +27,40 @@ beforeAll(() => {
+     } as Response)
+   );
+ });
+ afterAll(() => {
+   globalThis.fetch = originalFetch;
+ });
+ 
+ function createMockLlm() {
+   return {
+     async complete(prompt: string): Promise<string> {
+-      if (prompt.includes("需求解析器")) {
+-        return JSON.stringify({
+-          analysisType: "product_comparison",
+-          targets: [{ name: "微博" }, { name: "知乎" }],
+-          dimensions: ["functionality", "pricing"],
+-          outputFormat: ["comparison_matrix", "swot"],
+-          constraints: {},
+-        });
++      // ── Requirement parsing: multi-round prompts ──
++      if (prompt.includes("三种场景")) {
++        return JSON.stringify({ analysisType: "product_comparison", confidence: 0.9 });
++      }
++      if (prompt.includes("从用户输入中提取所有")) {
++        return JSON.stringify({ mentioned: ["微博", "知乎"], ownProduct: "微博" });
++      }
++      if (prompt.includes("从用户回答中提取完整的竞品列表")) {
++        return JSON.stringify({ targets: [{ name: "微博", isOwn: true }, { name: "知乎", isOwn: false }] });
++      }
++      if (prompt.includes("从用户回答中提取选中的对比维度")) {
++        return JSON.stringify({ dimensions: ["functionality", "pricing"] });
+       }
++      if (prompt.includes("从用户回答中提取选中的产物格式")) {
++        return JSON.stringify({ outputFormat: ["comparison_matrix", "swot"] });
++      }
++      if (prompt.includes("从用户回答中提取分析约束条件")) {
++        return JSON.stringify({ constraints: {} });
++      }
++      // ── Orchestration ──
+       if (prompt.includes("工作流编排器")) {
+         return JSON.stringify({
+           phases: [
+             { name: "采集", targetNodes: ["information_collection"], rationale: "采集竞品数据" },
+             { name: "分析", targetNodes: ["information_processing", "analysis_reasoning"], rationale: "处理分析数据" },
+             { name: "生成", targetNodes: ["artifact_generation"], rationale: "生成产物" },
+           ],
+         });
+       }
+       if (prompt.includes("搜索计划") || prompt.includes("采集调度器")) {
+@@ -99,50 +110,76 @@ function createMockLlm() {
+ function createMockEventBus(): EventBus {
+   return {
+     async publish(_event: any): Promise<void> {},
+     async subscribe(_workflowId: string, _handler: (event: any) => void): Promise<void> {},
+     async unsubscribe(_workflowId: string): Promise<void> {},
+   };
+ }
+ 
+ function createAutoContinueDeps(): RunnerDeps {
+   const events: WorkflowLifecycleEvent[] = [];
++  let clarificationRound = 0;
+   return {
+     loadEventStream: async () => [],
+     appendEvent: async (_wfId, event) => { events.push(event); },
+     waitForHumanDecision: async () => {
+       const routeEvent = [...events].reverse().find(e => e.type === "route.required");
+       if (routeEvent && routeEvent.type === "route.required" && routeEvent.suggestions.length > 0) {
+         return { targetNode: routeEvent.suggestions[0].nodeId, action: "continue" };
+       }
+       return { targetNode: "artifact_generation", action: "continue" };
+     },
++    waitForHumanClarification: async (): Promise<HumanClarification> => {
++      clarificationRound++;
++      const responses: Record<number, string> = {
++        1: "product_comparison",
++        2: "微博和知乎，自身产品是微博",
++        3: "functionality, pricing",
++        4: "comparison_matrix, swot",
++        5: "无",
++        6: "确认",
++      };
++      return { round: clarificationRound, userResponse: responses[clarificationRound] ?? "确认" };
++    },
+     updateWorkflowStatus: async () => {},
+   };
+ }
+ 
+ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
+   it("should complete product comparison workflow end to end", async () => {
+     const llm = createMockLlm();
+     const registry = createRegistry(llm);
+     const eventBus = createMockEventBus();
+     const deps = createAutoContinueDeps();
+     const runtime = new GraphRuntime(registry);
+     let state = runtime.initialState({ userInput: "对比微博和知乎的会员功能差异" });
+ 
+     const collectedEvents: WorkflowLifecycleEvent[] = [];
++    let testClarificationRound = 0;
+     const wrappedDeps: RunnerDeps = {
+       ...deps,
+       appendEvent: async (_wfId, event) => {
+         collectedEvents.push(event);
+         return deps.appendEvent(_wfId, event);
+       },
++      waitForHumanClarification: async (): Promise<HumanClarification> => {
++        testClarificationRound++;
++        const responses: Record<number, string> = {
++          1: "product_comparison",
++          2: "微博和知乎，自身产品是微博",
++          3: "functionality, pricing",
++          4: "comparison_matrix, swot",
++          5: "无",
++          6: "确认",
++        };
++        return { round: testClarificationRound, userResponse: responses[testClarificationRound] ?? "确认" };
++      },
+     };
+ 
+     const ctx = {
+       traceId: "",
+       workflowId: "test-wf-1",
+       runId: state.runtime.runId,
+       nodeId: "",
+       iteration: 0,
+       signal: new AbortController().signal,
+       llm: { complete: llm.complete, plan: async () => ({ phases: [] }), synthesize: async (_s: any, r: any[]) => r },
+@@ -179,23 +216,36 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
+ 
+   it("should handle empty user input gracefully", async () => {
+     const llm = createMockLlm();
+     const registry = createRegistry(llm);
+     const eventBus = createMockEventBus();
+     const deps = createAutoContinueDeps();
+     const runtime = new GraphRuntime(registry);
+     let state = runtime.initialState({ userInput: "" });
+ 
+     const collectedEvents: WorkflowLifecycleEvent[] = [];
++    let testClarificationRound2 = 0;
+     const wrappedDeps: RunnerDeps = {
+       ...deps,
+       appendEvent: async (_wfId, event) => { collectedEvents.push(event); return deps.appendEvent(_wfId, event); },
++      waitForHumanClarification: async (): Promise<HumanClarification> => {
++        testClarificationRound2++;
++        const responses: Record<number, string> = {
++          1: "product_comparison",
++          2: "微博和知乎，自身产品是微博",
++          3: "functionality, pricing",
++          4: "comparison_matrix, swot",
++          5: "无",
++          6: "确认",
++        };
++        return { round: testClarificationRound2, userResponse: responses[testClarificationRound2] ?? "确认" };
++      },
+     };
+ 
+     const ctx = {
+       traceId: "", workflowId: "test-wf-2", runId: state.runtime.runId, nodeId: "", iteration: 0,
+       signal: new AbortController().signal,
+       llm: { complete: llm.complete, plan: async () => ({ phases: [] }), synthesize: async (_s: any, r: any[]) => r },
+       emit: async (event: any) => {
+         await eventBus.publish({
+           traceId: "", eventType: event.eventType ?? "EVENT", uiHint: event.uiHint,
+           nodeId: "", workflowId: "test-wf-2", runId: "", payload: event.payload ?? {},
