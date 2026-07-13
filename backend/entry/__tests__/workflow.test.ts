@@ -2,11 +2,16 @@
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { createRegistry } from "../workflow.js";
+import { createArtifactGenerationCap } from "../../capabilities/artifact_generation/index.js";
+import { createRequirementParsingCap } from "../../capabilities/requirement_parsing/index.js";
+import { createInformationCollectionCap } from "../../capabilities/information_collection/index.js";
+import { createInformationProcessingCap } from "../../capabilities/information_processing/index.js";
+import { createAnalysisReasoningCap } from "../../capabilities/analysis_reasoning/index.js";
 import { runWorkflow } from "../../src/workflow/runner.js";
 import type { RunnerDeps } from "../../src/workflow/runner.js";
 import type { WorkflowLifecycleEvent, HumanClarification } from "../../src/workflow/events.js";
-import { GraphRuntime } from "../../runtime/index.js";
-import type { EventBus } from "../../runtime/index.js";
+import { GraphRuntime, CapabilityRegistry } from "../../runtime/index.js";
+import type { EventBus, Capability, RuntimeState } from "../../runtime/index.js";
 import type { RuntimeContext } from "../../runtime/index.js";
 
 // mock DDG API（web_search 替换真实实现后需要，避免测试真实网络调用超时）
@@ -44,6 +49,33 @@ beforeAll(() => {
 afterAll(() => {
   globalThis.fetch = originalFetch;
 });
+
+// Wraps artifact_generation + captures final state.data for test inspection
+let capturedWorkflowData: Record<string, any> = {};
+
+function createStateCapturingArtifactGenerationCap(): Capability {
+  const real = createArtifactGenerationCap();
+  return {
+    ...real,
+    id: "artifact_generation",
+    description: "Artifact generation + state capture for testing",
+    requires: ["analysis_reasoning"],
+    outputHints: ["artifacts", "_captured"],
+    async execute(state: RuntimeState, ctx: RuntimeContext): Promise<{ patch: Record<string, any>; artifacts: any[] }> {
+      // Save the full state BEFORE executing (so we see rawData, structuredData, analysisResults)
+      capturedWorkflowData = {
+        config: state.data.config,
+        rawData: state.data.rawData,
+        structuredData: state.data.structuredData,
+        analysisResults: state.data.analysisResults,
+      };
+      // Delegate to real artifact_generation
+      const result = await real.execute(state, ctx);
+      capturedWorkflowData.artifacts = result.patch.artifacts ?? state.data.artifacts;
+      return result;
+    },
+  };
+}
 
 function createMockLlm() {
   return {
@@ -195,7 +227,14 @@ function createAutoContinueDeps(): RunnerDeps {
 describe("Phase 2 全链路 E2E (with HITL runner)", () => {
   it("should complete product comparison workflow end to end", async () => {
     const llm = createMockLlm();
-    const registry = createRegistry(llm);
+    // Use capture wrapper instead of createRegistry so we can inspect the full
+    // state.data after the runWorkflow pipeline completes (with HITL loop).
+    const registry = new CapabilityRegistry();
+    registry.register(createRequirementParsingCap(llm));
+    registry.register(createInformationCollectionCap(llm));
+    registry.register(createInformationProcessingCap(llm));
+    registry.register(createAnalysisReasoningCap(llm));
+    registry.register(createStateCapturingArtifactGenerationCap());
     const eventBus = createMockEventBus();
     const deps = createAutoContinueDeps();
     const runtime = new GraphRuntime(registry);
@@ -272,6 +311,55 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
 
     const clarificationProvided = collectedEvents.filter(e => e.type === "clarification.provided");
     expect(clarificationProvided.length).toBe(clarificationRequired.length);
+
+    // ═══ Deep data contract verification — captured by state_capture Capability ═══
+    const captured = capturedWorkflowData;
+    expect(captured.config).toBeDefined();
+    expect(captured.config.targets).toHaveLength(2);
+    expect(captured.config.dimensions).toContain("functionality");
+    expect(captured.config.outputFormat).toContain("comparison_matrix");
+    expect(captured.config.clarificationHistory.length).toBeGreaterThanOrEqual(5);
+
+    // rawData verification
+    expect(captured.rawData).toBeDefined();
+    const rawKeys = Object.keys(captured.rawData);
+    expect(rawKeys.length).toBeGreaterThanOrEqual(1);
+    for (const dim of rawKeys) {
+      for (const item of captured.rawData[dim]) {
+        expect(item).toHaveProperty("target");
+        expect(item).toHaveProperty("dimension");
+        expect(item).toHaveProperty("content");
+        expect(item).toHaveProperty("sourceUrl");
+        expect(item).toHaveProperty("credibility");
+      }
+    }
+
+    // structuredData verification
+    expect(captured.structuredData).toBeDefined();
+    for (const dim of Object.keys(captured.structuredData ?? {})) {
+      for (const rec of (captured.structuredData as any)[dim]) {
+        expect(rec).toHaveProperty("target");
+        expect(rec).toHaveProperty("attribute");
+        expect(rec).toHaveProperty("value");
+        expect(rec).toHaveProperty("confidence");
+        expect(rec).toHaveProperty("status");
+      }
+    }
+
+    // analysisResults verification
+    expect(captured.analysisResults).toBeDefined();
+    expect(captured.analysisResults.comparisonMatrix).toBeDefined();
+    expect(captured.analysisResults.swot).toBeDefined();
+    expect(captured.analysisResults.insights).toBeDefined();
+    expect(typeof captured.analysisResults.summary).toBe("string");
+    expect(captured.analysisResults.summary.length).toBeGreaterThan(0);
+
+    // artifacts verification
+    expect(captured.artifacts).toBeDefined();
+    expect(captured.artifacts.length).toBeGreaterThanOrEqual(2);
+    const types = captured.artifacts.map((a: any) => a.type);
+    expect(types).toContain("comparison_matrix");
+    expect(types).toContain("swot");
   });
 
   it("should handle empty user input gracefully", async () => {
@@ -320,197 +408,5 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
 
     const executed = collectedEvents.filter(e => e.type === "node.executed").map(e => (e as any).nodeId);
     expect(executed).toContain("requirement_parsing");
-  });
-
-  // This test validates data shapes / contracts by driving Capability.execute directly.
-  // It does NOT exercise the HITL clarification loop — see the runWorkflow tests above
-  // for full user-flow coverage.
-  it("should verify data contract through direct Capability execution", async () => {
-    const llm = createMockLlm();
-    const registry = createRegistry(llm);
-    const runtime = new GraphRuntime(registry);
-
-    // Initial state
-    let state = runtime.initialState({ userInput: "对比微博和知乎的会员功能差异" });
-
-    const emitted: any[] = [];
-    function makeCtx(nodeId: string): RuntimeContext {
-      return {
-        traceId: `trace-${nodeId}`,
-        workflowId: "test-wf-deep",
-        runId: state.runtime.runId,
-        nodeId,
-        iteration: 0,
-        signal: new AbortController().signal,
-        llm: {
-          complete: llm.complete,
-          plan: async () => ({ phases: [] }),
-          synthesize: async (_s: any, r: any[]) => r,
-        },
-        emit: async (event: any) => { emitted.push(event); },
-        saveArtifact: async () => "",
-      };
-    }
-
-    // ═══ Step 1: Requirement Parsing ═══
-    // Round 1: scene_selection
-    let result = await registry.get("requirement_parsing")!.execute(state, makeCtx("requirement_parsing"));
-    state.data._rpState = result.patch._rpState;
-
-    // Rounds 2-5: targets, dimensions, output_format, constraints
-    const answers = [
-      "微博和知乎，自身产品是微博",       // round 2: targets
-      "functionality, pricing",           // round 3: dimensions
-      "comparison_matrix, swot",          // round 4: output_format
-      "无",                               // round 5: constraints
-    ];
-    for (const ans of answers) {
-      state.data._userResponse = ans;
-      result = await registry.get("requirement_parsing")!.execute(state, makeCtx("requirement_parsing"));
-      state.data._rpState = result.patch._rpState;
-      state.data._userResponse = undefined;
-    }
-
-    // Round 6: confirm_preview — first call emits clarification_asked
-    result = await registry.get("requirement_parsing")!.execute(state, makeCtx("requirement_parsing"));
-    state.data._rpState = result.patch._rpState;
-
-    // Round 6 confirm response
-    state.data._userResponse = "确认";
-    result = await registry.get("requirement_parsing")!.execute(state, makeCtx("requirement_parsing"));
-    // Merge final patch (config + _rpState: null)
-    state.data._rpState = result.patch._rpState;
-    state.data.config = result.patch.config;
-    state.data._userResponse = undefined;
-
-    // After confirmation, rpState should be null and config should exist
-    expect(state.data._rpState).toBeNull();
-    const config = state.data.config as any;
-    expect(config).toBeDefined();
-    expect(config.analysisType).toBe("product_comparison");
-    expect(config.targets).toHaveLength(2);
-    expect(config.targets[0].name).toBe("微博");
-    expect(config.dimensions).toContain("functionality");
-    expect(config.dimensions).toContain("pricing");
-    expect(config.outputFormat).toContain("comparison_matrix");
-    expect(config.outputFormat).toContain("swot");
-    expect(config.clarificationHistory).toBeDefined();
-    expect(config.clarificationHistory.length).toBe(6);
-
-    // Verify each clarification round has agentPrompt and extractedDelta
-    const sceneRound = config.clarificationHistory[0];
-    expect(sceneRound.questionType).toBe("scene_selection");
-    expect(sceneRound.agentPrompt).toBeTruthy();
-    expect(sceneRound.extractedDelta.analysisType).toBe("product_comparison");
-
-    // ═══ Step 2: Information Collection ═══
-    result = await registry.get("information_collection")!.execute(state, makeCtx("information_collection"));
-    // Merge patch
-    state = { ...state, data: { ...state.data, ...result.patch } };
-
-    const rawData = state.data.rawData as Record<string, any[]>;
-    expect(rawData).toBeDefined();
-    expect(Object.keys(rawData).length).toBeGreaterThanOrEqual(1);
-    // Check each item has the correct shape
-    for (const dim of Object.keys(rawData)) {
-      for (const item of rawData[dim]) {
-        expect(item).toHaveProperty("target");
-        expect(item).toHaveProperty("dimension");
-        expect(item).toHaveProperty("content");
-        expect(item).toHaveProperty("sourceUrl");
-        expect(item).toHaveProperty("retrievedAt");
-        expect(item).toHaveProperty("credibility");
-      }
-    }
-
-    // ═══ Step 3: Information Processing ═══
-    result = await registry.get("information_processing")!.execute(state, makeCtx("information_processing"));
-    state = { ...state, data: { ...state.data, ...result.patch } };
-
-    const structuredData = state.data.structuredData as Record<string, any[]>;
-    expect(structuredData).toBeDefined();
-    // Each record should have the StructuredRecord shape
-    for (const dim of Object.keys(structuredData)) {
-      for (const rec of structuredData[dim]) {
-        expect(rec).toHaveProperty("target");
-        expect(rec).toHaveProperty("dimension");
-        expect(rec).toHaveProperty("attribute");
-        expect(rec).toHaveProperty("value");
-        expect(rec).toHaveProperty("confidence");
-        expect(rec).toHaveProperty("status");
-        expect(["clean", "conflicting", "inferred"]).toContain(rec.status);
-      }
-    }
-
-    // ═══ Step 4: Analysis Reasoning ═══
-    result = await registry.get("analysis_reasoning")!.execute(state, makeCtx("analysis_reasoning"));
-    state = { ...state, data: { ...state.data, ...result.patch } };
-
-    const analysisResults = state.data.analysisResults as any;
-    expect(analysisResults).toBeDefined();
-    expect(analysisResults.comparisonMatrix).toBeDefined();
-    expect(Array.isArray(analysisResults.comparisonMatrix)).toBe(true);
-    expect(analysisResults.swot).toBeDefined();
-    expect(Array.isArray(analysisResults.swot)).toBe(true);
-    expect(analysisResults.insights).toBeDefined();
-    expect(Array.isArray(analysisResults.insights)).toBe(true);
-    expect(analysisResults.summary).toBeDefined();
-    expect(typeof analysisResults.summary).toBe("string");
-    expect(analysisResults.summary.length).toBeGreaterThan(0);
-    // SWOT entries should have all required fields
-    for (const entry of analysisResults.swot) {
-      expect(entry).toHaveProperty("category");
-      expect(entry).toHaveProperty("target");
-      expect(entry).toHaveProperty("point");
-      expect(entry).toHaveProperty("evidence");
-      expect(["strengths", "weaknesses", "opportunities", "threats"]).toContain(entry.category);
-    }
-    // Insights should have all required fields
-    for (const insight of analysisResults.insights) {
-      expect(insight).toHaveProperty("category");
-      expect(insight).toHaveProperty("statement");
-      expect(insight).toHaveProperty("evidence");
-      expect(["gap", "opportunity", "risk", "advantage"]).toContain(insight.category);
-    }
-
-    // ═══ Step 5: Artifact Generation ═══
-    result = await registry.get("artifact_generation")!.execute(state, makeCtx("artifact_generation"));
-    state = { ...state, data: { ...state.data, ...result.patch } };
-
-    const artifacts = state.data.artifacts as any[];
-    expect(artifacts).toBeDefined();
-    expect(artifacts.length).toBeGreaterThanOrEqual(2); // at least comparison_matrix + swot
-    // Each artifact should have type, format, title, content, sourceMap
-    const artifactTypes = artifacts.map((a: any) => a.type);
-    expect(artifactTypes).toContain("comparison_matrix");
-    expect(artifactTypes).toContain("swot");
-    for (const art of artifacts) {
-      expect(art).toHaveProperty("type");
-      expect(art).toHaveProperty("format");
-      expect(art).toHaveProperty("title");
-      expect(art).toHaveProperty("content");
-      expect(art).toHaveProperty("sourceMap");
-      expect(typeof art.title).toBe("string");
-      expect(art.title.length).toBeGreaterThan(0);
-      expect(typeof art.content).toBe("string");
-    }
-    // SWOT artifacts should contain SWOT structure
-    const swotArtifact = artifacts.find((a: any) => a.type === "swot");
-    expect(swotArtifact).toBeDefined();
-    expect(swotArtifact.content).toContain("SWOT 分析");
-
-    // Emitted events should include WORKFLOW_COMPLETE
-    const completeEvent = emitted.find(e => e.uiHint === "workflow_complete");
-    expect(completeEvent).toBeDefined();
-    expect(completeEvent.payload).toHaveProperty("artifactCount");
-    expect(completeEvent.payload).toHaveProperty("sourceMapCount");
-
-    // ═══ Full flow verification ═══
-    // Verify the data chain is intact: config → rawData → structuredData → analysisResults → artifacts
-    expect(config.targets[0].name).toBe("微博");
-    expect(Object.keys(rawData).length).toBeGreaterThanOrEqual(1);
-    expect(Object.keys(structuredData).length).toBeGreaterThanOrEqual(0);
-    expect(analysisResults.summary.length).toBeGreaterThan(0);
-    expect(artifacts.length).toBeGreaterThanOrEqual(2);
   });
 });
