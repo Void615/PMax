@@ -1,0 +1,13 @@
+{
+  "name": "search_planner",
+  "description": "将竞品×维度网格分解为分批搜索计划",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "targets": { "type": "array", "items": { "type": "object" } },
+      "dimensions": { "type": "array", "items": { "type": "string" } },
+      "constraints": { "type": "object" }
+    },
+    "required": ["targets", "dimensions"]
+  }
+}

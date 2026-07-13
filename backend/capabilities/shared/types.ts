@@ -162,6 +162,37 @@ export interface CollectionResult {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 信息采集工具类型（information_collection Capability 内部使用）
+// ─────────────────────────────────────────────────────────────
+
+/** 单个搜索查询 */
+export interface SearchQuery {
+  target: string;
+  dimension: string;
+  query: string;
+  searchType: "broad" | "targeted";
+}
+
+/** 一批可并行执行的搜索查询 */
+export interface SearchBatch {
+  queries: SearchQuery[];
+}
+
+/** 搜索计划 */
+export interface SearchPlan {
+  batches: SearchBatch[];
+}
+
+/** 采集报告 */
+export interface CollectionReport {
+  totalItems: number;
+  perDimension: Record<string, { count: number; credibilityBreakdown: Record<string, number> }>;
+  sufficiencyScore: number;
+  sufficiencyVerdict: "sufficient" | "insufficient";
+  collectionRounds: number;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 生产方: information_processing
 // 消费方: analysis_reasoning（优先使用，优于 rawData）
 // ─────────────────────────────────────────────────────────────

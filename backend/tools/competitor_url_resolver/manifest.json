@@ -1,0 +1,12 @@
+{
+  "name": "competitor_url_resolver",
+  "description": "根据产品名称和品类查找官方网站或应用商店URL",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "description": "产品名称" },
+      "category": { "type": "string", "description": "产品品类（可选）" }
+    },
+    "required": ["name"]
+  }
+}

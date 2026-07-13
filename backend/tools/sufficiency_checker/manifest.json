@@ -1,0 +1,13 @@
+{
+  "name": "sufficiency_checker",
+  "description": "评估采集充分性，1-5评分并给出补充建议",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "rawDataItems": { "type": "array", "items": { "type": "object" } },
+      "dimensions": { "type": "array", "items": { "type": "string" } },
+      "targetCount": { "type": "number" }
+    },
+    "required": ["rawDataItems", "dimensions", "targetCount"]
+  }
+}

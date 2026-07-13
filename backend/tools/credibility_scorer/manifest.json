@@ -1,0 +1,13 @@
+{
+  "name": "credibility_scorer",
+  "description": "根据来源域名、时效性和内容完整性评估信息可信度",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string" },
+      "content": { "type": "string" },
+      "retrievedAt": { "type": "string" }
+    },
+    "required": ["url", "content", "retrievedAt"]
+  }
+}
