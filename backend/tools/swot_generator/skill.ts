@@ -1,4 +1,5 @@
 import type { Tool, ToolContext } from "../../runtime/capability/types.js";
+import { SWOT_GENERATOR_PROMPT } from "./prompts.js";
 
 export function createSwotGenerator(
   llm: { complete(prompt: string): Promise<string> }
@@ -11,24 +12,18 @@ export function createSwotGenerator(
       properties: {
         target: { type: "string", description: "竞品名称" },
         data: { type: "string", description: "该竞品的对比数据 JSON 字符串" },
+        comparisonContext: { type: "string", description: "跨竞品对比上下文（可选）" },
+        confidencePenalty: { type: "number", description: "全局置信度惩罚系数 0-1（可选）" },
       },
       required: ["target", "data"],
     },
     async execute(params: Record<string, any>, _ctx: ToolContext): Promise<any> {
-      const { target, data } = params;
-      const prompt = `基于以下对比数据，为竞品 ${target} 生成 SWOT 分析。
-
-对比数据：${data}
-
-输出 JSON: {
-  "swot": [
-    { "category": "strengths"|"weaknesses"|"opportunities"|"threats",
-      "point": "具体分析点",
-      "evidence": "数据中的支撑证据" }
-  ]
-}
-
-规则：每类 2-5 条。S/W 基于产品自身，O/T 基于外部环境。`;
+      const { target, data, comparisonContext, confidencePenalty } = params;
+      const prompt = SWOT_GENERATOR_PROMPT
+        .replace("{target}", target)
+        .replace("{data}", data)
+        .replace("{comparisonContext}", comparisonContext ?? "无")
+        .replace("{confidencePenalty}", String(confidencePenalty ?? 0));
 
       const raw = await llm.complete(prompt);
       const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];

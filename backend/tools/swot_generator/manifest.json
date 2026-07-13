@@ -5,7 +5,9 @@
     "type": "object",
     "properties": {
       "target": { "type": "string", "description": "竞品名称" },
-      "data": { "type": "string", "description": "该竞品的对比数据 JSON 字符串" }
+      "data": { "type": "string", "description": "该竞品的对比数据 JSON 字符串" },
+      "comparisonContext": { "type": "string", "description": "跨竞品对比上下文（可选）" },
+      "confidencePenalty": { "type": "number", "description": "全局置信度惩罚系数 0-1（可选）" }
     },
     "required": ["target", "data"]
   }

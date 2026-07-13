@@ -1,0 +1,15 @@
+{
+  "name": "insight_extractor",
+  "description": "以自身产品为参照系提取差异化竞争洞察",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "comparisonMatrix": { "type": "array", "items": { "type": "object" } },
+      "swot": { "type": "array", "items": { "type": "object" } },
+      "ownProduct": { "type": "string" },
+      "imbalanceWarnings": { "type": "array", "items": { "type": "string" } },
+      "confidencePenalty": { "type": "number" }
+    },
+    "required": ["comparisonMatrix", "swot", "ownProduct"]
+  }
+}

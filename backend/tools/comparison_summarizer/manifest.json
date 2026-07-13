@@ -1,0 +1,15 @@
+{
+  "name": "comparison_summarizer",
+  "description": "基于对比分析和洞察生成综合分析摘要（≤500字）",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "targets": { "type": "array", "items": { "type": "string" } },
+      "matrixSummary": { "type": "string" },
+      "swotSummary": { "type": "string" },
+      "insights": { "type": "string" },
+      "imbalanceWarnings": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["targets", "matrixSummary", "swotSummary", "insights"]
+  }
+}

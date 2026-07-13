@@ -287,16 +287,41 @@ export interface SWOTEntry {
 }
 
 /**
+ * 差异化洞察。
+ *
+ * @field category       - 洞察类别: gap(自身短板) / opportunity(蓝海机会) / risk(竞品反超) / advantage(自身优势)
+ * @field statement      - 洞察陈述（一句话）
+ * @field evidence        - 支撑证据（引用具体对比数据）
+ * @field relatedTargets  - 关联的竞品名称列表
+ * @field sourceTraceIds  - 回溯到 rawData/structuredData 的 traceId
+ */
+export interface Insight {
+  category: "gap" | "opportunity" | "risk" | "advantage";
+  statement: string;
+  evidence: string;
+  relatedTargets: string[];
+  sourceTraceIds: string[];
+}
+
+/**
  * 分析推理的完整产出。写入 `state.data.analysisResults`。
  *
  * @field comparisonMatrix - 多维度对比矩阵（每行一个属性）
  * @field swot             - 每个竞品的 SWOT 分析条目
- * @field summary          - LLM 生成的综合分析摘要（≤500 字）
+ * @field summary          - 综合分析摘要（≤500 字）
+ * @field insights         - 差异化竞争洞察
+ * @field analysisReport   - 分析过程元数据
  */
 export interface AnalysisResult {
   comparisonMatrix: FeatureComparison[];
   swot: SWOTEntry[];
   summary: string;
+  insights: Insight[];
+  analysisReport?: {
+    conclusionCount: number;
+    overallConfidence: "high" | "medium" | "low";
+    imbalanceWarnings?: string[];
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
