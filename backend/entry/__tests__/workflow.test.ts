@@ -260,6 +260,18 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
 
     const continuedEvents = collectedEvents.filter(e => e.type === "human.continued");
     expect(continuedEvents.length).toBe(routeEvents.length);
+
+    // Verify clarification lifecycle: all rounds had required+provided pairs
+    const clarificationRequired = collectedEvents.filter(e => e.type === "clarification.required");
+    expect(clarificationRequired.length).toBeGreaterThanOrEqual(5);
+    // Round 1 should be scene_selection
+    const round1 = clarificationRequired.find(
+      e => (e as any).round === 1 || (e as any).questionType === "scene_selection",
+    );
+    expect(round1).toBeDefined();
+
+    const clarificationProvided = collectedEvents.filter(e => e.type === "clarification.provided");
+    expect(clarificationProvided.length).toBe(clarificationRequired.length);
   });
 
   it("should handle empty user input gracefully", async () => {
@@ -310,7 +322,10 @@ describe("Phase 2 全链路 E2E (with HITL runner)", () => {
     expect(executed).toContain("requirement_parsing");
   });
 
-  it("should produce correct data through all 5 capability nodes", async () => {
+  // This test validates data shapes / contracts by driving Capability.execute directly.
+  // It does NOT exercise the HITL clarification loop — see the runWorkflow tests above
+  // for full user-flow coverage.
+  it("should verify data contract through direct Capability execution", async () => {
     const llm = createMockLlm();
     const registry = createRegistry(llm);
     const runtime = new GraphRuntime(registry);
