@@ -1,0 +1,13 @@
+{
+  "name": "source_map_builder",
+  "description": "从分析结论回溯到原始URL，构建全链路溯源映射",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "analysisResults": { "type": "object" },
+      "rawData": { "type": "object" },
+      "structuredData": { "type": "object" }
+    },
+    "required": ["analysisResults", "rawData"]
+  }
+}

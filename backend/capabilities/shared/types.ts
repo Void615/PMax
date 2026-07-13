@@ -50,8 +50,9 @@ export type Dimension =
  * - "swot"              SWOT 分析
  * - "feature_list"      功能点列表
  * - "report"            综合报告
+ * - "insight_report"    洞察报告
  */
-export type OutputFormat = "comparison_matrix" | "swot" | "feature_list" | "report";
+export type OutputFormat = "comparison_matrix" | "swot" | "feature_list" | "report" | "insight_report";
 
 /**
  * 分析约束条件，影响信息采集的搜索范围和分析推理的时间/地域裁剪。
@@ -342,6 +343,7 @@ export interface SourceMapEntry {
   sourceUrl: string;
   sourceExcerpt: string;
   traceId: string;
+  credibility: "high" | "medium" | "low" | "unknown";
 }
 
 /**
@@ -354,7 +356,7 @@ export interface SourceMapEntry {
  * @field sourceMap - 溯源映射列表，支持结论→来源的精准回溯
  */
 export interface Artifact {
-  type: "comparison_matrix" | "swot" | "summary";
+  type: "comparison_matrix" | "swot" | "summary" | "insight_report" | "report";
   format: "markdown" | "html" | "json";
   title: string;
   content: string;
