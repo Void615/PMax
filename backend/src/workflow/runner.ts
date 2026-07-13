@@ -16,12 +16,13 @@ import {
   countIterations,
   getOutputKeys,
 } from "./events.js";
-import type { WorkflowLifecycleEvent, HumanDecision } from "./events.js";
+import type { WorkflowLifecycleEvent, HumanDecision, HumanClarification } from "./events.js";
 
 export interface RunnerDeps {
   loadEventStream(workflowId: string): Promise<WorkflowLifecycleEvent[]>;
   appendEvent(workflowId: string, event: WorkflowLifecycleEvent): Promise<void>;
   waitForHumanDecision(workflowId: string): Promise<HumanDecision>;
+  waitForHumanClarification(workflowId: string): Promise<HumanClarification>;
   updateWorkflowStatus(
     workflowId: string,
     data: { status: string; pausedAt?: Date | null; currentNode?: string }
@@ -68,6 +69,56 @@ export async function* runWorkflow(
     // Execute node
     ctx.nodeId = currentNode;
     state = await runtime.executeStep(currentNode, state, ctx);
+
+    // ── Intra-node clarification pause ──
+    const rpState = state.data._rpState;
+    if (rpState) {
+      const rp = rpState as any;
+      const round = rp.history?.length ?? rp.roundIndex + 1;
+      const questionType = rp.pendingQuestionType ?? "";
+      const lastPrompt = rp.history?.[rp.history.length - 1]?.agentPrompt ?? "";
+
+      await deps.appendEvent(workflowId, {
+        type: "clarification.required",
+        nodeId: currentNode,
+        round,
+        questionType,
+        agentPrompt: lastPrompt,
+      });
+
+      await deps.updateWorkflowStatus(workflowId, {
+        status: "paused",
+        pausedAt: new Date(),
+        currentNode,
+      });
+
+      const clarification = await deps.waitForHumanClarification(workflowId);
+
+      await deps.appendEvent(workflowId, {
+        type: "clarification.provided",
+        nodeId: currentNode,
+        round,
+        userResponse: clarification.userResponse,
+        extractedDelta: {},
+      });
+
+      await deps.updateWorkflowStatus(workflowId, {
+        status: "running",
+        pausedAt: null,
+        currentNode,
+      });
+
+      state = fold(state, {
+        type: "clarification.provided",
+        nodeId: currentNode,
+        round,
+        userResponse: clarification.userResponse,
+        extractedDelta: {},
+      }, registry);
+
+      continue;  // re-enter same node
+    }
+
     const iteration = countIterations(state, currentNode);
     const outputKeys = getOutputKeys(currentNode, registry);
 

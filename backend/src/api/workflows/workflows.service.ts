@@ -5,7 +5,7 @@ import { RedisService } from '../../infra/redis/redis.service';
 import { createRegistry } from '../../../entry/workflow.js';
 import { runWorkflow } from '../../../src/workflow/runner.js';
 import type { RunnerDeps } from '../../../src/workflow/runner.js';
-import type { WorkflowLifecycleEvent, HumanDecision } from '../../../src/workflow/events.js';
+import type { WorkflowLifecycleEvent, HumanDecision, HumanClarification } from '../../../src/workflow/events.js';
 
 @Injectable()
 export class WorkflowsService {
@@ -160,6 +160,14 @@ export class WorkflowsService {
         waitForHumanDecision: (wfId: string) => {
           return new Promise<HumanDecision>((resolve) => {
             const channel = `workflow:${wfId}:decision`;
+            this.redis.subscribe(channel, (msg: string) => {
+              resolve(JSON.parse(msg));
+            });
+          });
+        },
+        waitForHumanClarification: (wfId: string) => {
+          return new Promise<HumanClarification>((resolve) => {
+            const channel = `workflow:${wfId}:clarification`;
             this.redis.subscribe(channel, (msg: string) => {
               resolve(JSON.parse(msg));
             });
