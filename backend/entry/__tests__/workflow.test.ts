@@ -9,23 +9,36 @@ import { GraphRuntime } from "../../runtime/index.js";
 import type { EventBus } from "../../runtime/index.js";
 
 // mock DDG API（web_search 替换真实实现后需要，避免测试真实网络调用超时）
+// Also provides HTML responses for web_scrape since the capability now scrapes search result URLs.
 const originalFetch = globalThis.fetch;
 beforeAll(() => {
-  globalThis.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) =>
-    Promise.resolve({
+  globalThis.fetch = vi.fn().mockImplementation((_url: string | URL | Request, _init?: RequestInit) => {
+    const urlStr = typeof _url === "string" ? _url : _url instanceof URL ? _url.href : _url.url;
+    // DDG API requests get JSON
+    if (urlStr.includes("duckduckgo.com")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          AbstractText: "测试摘要内容",
+          AbstractURL: "https://example.com",
+          Heading: "测试标题",
+          RelatedTopics: [
+            { Text: "相关话题1 - 描述文本", FirstURL: "https://example.com/1" },
+            { Text: "相关话题2 - 描述文本", FirstURL: "https://example.com/2" },
+          ],
+        }),
+      } as Response);
+    }
+    // All other URLs (web_scrape targets) get fake HTML
+    return Promise.resolve({
       ok: true,
       status: 200,
-      json: async () => ({
-        AbstractText: "测试摘要内容",
-        AbstractURL: "https://example.com",
-        Heading: "测试标题",
-        RelatedTopics: [
-          { Text: "相关话题1 - 描述文本", FirstURL: "https://example.com/1" },
-          { Text: "相关话题2 - 描述文本", FirstURL: "https://example.com/2" },
-        ],
-      }),
-    } as Response)
-  );
+      headers: new Headers({ "content-type": "text/html; charset=utf-8" }),
+      text: async () => "<html><head><title>测试页面</title></head><body><article><h1>产品功能介绍</h1><p>这是竞品分析测试页面的正文内容，包含丰富的产品功能描述和定价信息。会员价格15元每月，支持去广告、高清视频等高级功能。</p></article></body></html>",
+      json: async () => { throw new Error("Not JSON"); },
+    } as unknown as Response);
+  });
 });
 afterAll(() => {
   globalThis.fetch = originalFetch;
@@ -72,6 +85,12 @@ function createMockLlm() {
             ],
           }],
         });
+      }
+      if (prompt.includes("官方网站或应用商店URL")) {
+        return JSON.stringify({ url: "https://weibo.com", sourceType: "official" });
+      }
+      if (prompt.includes("对比维度统计")) {
+        return JSON.stringify({ suggestions: [] });
       }
       if (prompt.includes("数据提取器")) {
         return JSON.stringify({
