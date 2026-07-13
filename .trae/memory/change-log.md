@@ -256,3 +256,24 @@
   - 修改：.trae/memory/dev-progress.md, .trae/memory/change-log.md
 - 副作用：无
 - 其他信息：HITL 全链路实现闭环。Commit deef4ef..HEAD
+
+## 2026-07-12 22:35
+- 概述：web_search / web_scrape 从占位桩替换为真实实现，新增 Agent 层集成测试
+- 详细描述：
+  1. web_search：TDD 方式将 stub 替换为 DuckDuckGo Instant Answer API（零外部依赖，Node fetch + 8s 超时 + 网络异常降级）。5 个单元测试覆盖 DDG 三级数据源解析、maxResults 截断、空响应、网络异常、HTTP 错误。
+  2. web_scrape：TDD 方式将 stub 替换为 @mozilla/readability + jsdom 实现（10s 超时、Content-Type 检测、Readability 解析 fallback）。5 个单元测试。
+  3. 新增 CollectAgent（agents/collect-agent.ts）：编排 web_search → web_scrape 调用链，产出 SearchReport。
+  4. 新增搜索→抓取集成测试（tools/__tests__/search-scrape-integration.test.ts）：4 个用例覆盖链路完整性、多页面区别、死链降级、maxPages 限制。
+  5. 配套修改：vitest.config 添加 tools 目录、tsconfig.json 添加 types: node、package.json 新增 test:file 脚本和 jsdom/readability 依赖、workflow.test.ts 添加 fetch mock。
+  6. 全量 80/80 测试通过。已知：E2E POST /api/workflows 返回 500 为预先存在问题。
+- 影响的文件：
+  - 修改：backend/tools/web_search/skill.ts
+  - 新建：backend/tools/web_search/__tests__/skill.test.ts
+  - 修改：backend/tools/web_scrape/skill.ts
+  - 新建：backend/tools/web_scrape/__tests__/skill.test.ts
+  - 新建：backend/agents/collect-agent.ts
+  - 新建：backend/tools/__tests__/search-scrape-integration.test.ts
+  - 修改：backend/vitest.config.ts、backend/tsconfig.json、backend/package.json、backend/package-lock.json、backend/entry/__tests__/workflow.test.ts
+  - 新建：docs/superpowers/plans/2026-07-11-web-search-real-impl.md
+- 副作用：web_search / web_scrape 现在发起真实 HTTP 请求，测试环境中需 mock global.fetch
+- 其他信息：分支 feat/p2-tools-implements，Commits d8fdeac..7a55a9b（8 个）

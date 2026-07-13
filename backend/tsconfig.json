@@ -4,6 +4,7 @@
     "moduleResolution": "bundler",
     "target": "ES2021",
     "lib": ["ES2021"],
+    "types": ["node"],
     "strict": true,
     "strictPropertyInitialization": false,
     "experimentalDecorators": true,

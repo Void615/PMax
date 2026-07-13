@@ -24,8 +24,7 @@ backend/tools/**/*.d.ts
 # AI agent workspace
 .trae/
 .agents/
-.claude/
-CLAUDE.md
+
 
 # Editor
 .vscode
