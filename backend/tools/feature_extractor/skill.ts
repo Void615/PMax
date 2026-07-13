@@ -1,4 +1,23 @@
 import type { Tool, ToolContext } from "../../runtime/capability/types.js";
+import { FEATURE_EXTRACTOR_PROMPT } from "./prompts.js";
+
+interface FeatureExtractorParams {
+  target: string;
+  dimension: string;
+  rawContent: string;
+  items: { traceId: string; sourceUrl: string }[];
+}
+
+interface StructuredRecord {
+  target: string;
+  dimension: string;
+  attribute: string;
+  value: string;
+  rawValue?: string;
+  confidence: number;
+  sourceTraceIds: string[];
+  status: "clean" | "conflicting" | "inferred";
+}
 
 export function createFeatureExtractor(
   llm: { complete(prompt: string): Promise<string> }
@@ -9,17 +28,39 @@ export function createFeatureExtractor(
     parameters: {
       type: "object",
       properties: {
-        text: { type: "string", description: "功能描述文本" },
+        target: { type: "string", description: "竞品名称" },
+        dimension: { type: "string", description: "对比维度" },
+        rawContent: { type: "string", description: "原始文本内容" },
+        items: { type: "array", items: { type: "object" }, description: "来源条目 [{ traceId, sourceUrl }]" },
       },
-      required: ["text"],
+      required: ["target", "dimension", "rawContent", "items"],
     },
-    async execute(params: Record<string, any>, _ctx: ToolContext): Promise<any> {
-      const prompt = `从以下产品功能描述中提取原子功能点列表，每个功能点一句话概括。
-输出 JSON: { "features": ["功能点1", "功能点2", ...] }
-文本：${params.text}`;
+    async execute(params: Record<string, any>, _ctx: ToolContext): Promise<{ records: StructuredRecord[] }> {
+      const { target, dimension, rawContent, items } = params as unknown as FeatureExtractorParams;
+
+      const traceIds = items.map(i => i.traceId);
+
+      const prompt = FEATURE_EXTRACTOR_PROMPT
+        .replace("{target}", target)
+        .replace("{dimension}", dimension)
+        .replace("{rawContent}", rawContent.slice(0, 8000));
+
       const raw = await llm.complete(prompt);
       const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];
-      return JSON.parse((jsonMatch[1] ?? raw).trim());
+      const extracted = JSON.parse((jsonMatch[1] ?? raw).trim());
+
+      const records: StructuredRecord[] = (extracted.records ?? []).map((rec: any) => ({
+        target,
+        dimension,
+        attribute: rec.attribute,
+        value: rec.value,
+        rawValue: rec.rawValue ?? rec.value,
+        confidence: rec.confidence ?? 0.8,
+        sourceTraceIds: traceIds,
+        status: "clean" as const,
+      }));
+
+      return { records };
     },
   };
 }

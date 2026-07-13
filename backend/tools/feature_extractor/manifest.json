@@ -4,8 +4,11 @@
   "parameters": {
     "type": "object",
     "properties": {
-      "text": { "type": "string", "description": "功能描述文本" }
+      "target": { "type": "string", "description": "竞品名称" },
+      "dimension": { "type": "string", "description": "对比维度" },
+      "rawContent": { "type": "string", "description": "原始文本内容" },
+      "items": { "type": "array", "items": { "type": "object" }, "description": "来源条目 [{ traceId, sourceUrl }]" }
     },
-    "required": ["text"]
+    "required": ["target", "dimension", "rawContent", "items"]
   }
 }

@@ -1,0 +1,12 @@
+{
+  "name": "entity_resolver",
+  "description": "合并语义相同的属性名，解决同义异名问题",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "dimension": { "type": "string" },
+      "records": { "type": "array", "items": { "type": "object" } }
+    },
+    "required": ["dimension", "records"]
+  }
+}

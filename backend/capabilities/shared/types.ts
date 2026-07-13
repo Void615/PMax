@@ -216,6 +216,17 @@ export interface StructuredRecord {
   rawValue?: string;
   confidence: number;
   sourceTraceIds: string[];
+  status: "clean" | "conflicting" | "inferred";
+}
+
+/**
+ * 冲突报告。由 conflict_detector 生成，描述两条记录之间的矛盾。
+ */
+export interface ConflictReport {
+  recordA: StructuredRecord;
+  recordB: StructuredRecord;
+  nature: "value_contradiction" | "credibility_mismatch";
+  severity: "high" | "medium" | "low";
 }
 
 /**
@@ -223,10 +234,16 @@ export interface StructuredRecord {
  *
  * @field records             - 所有结构化记录
  * @field uncoveredDimensions - 处理后仍无数据的维度
+ * @field coverageMatrix      - (target, attribute) 覆盖率矩阵
+ * @field conflictCount       - 检测到的冲突总数
+ * @field conflicts           - 冲突详情列表
  */
 export interface ProcessingResult {
   records: StructuredRecord[];
   uncoveredDimensions: string[];
+  coverageMatrix: Record<string, Record<string, "covered" | "inferred" | "missing">>;
+  conflictCount: number;
+  conflicts?: ConflictReport[];
 }
 
 // ─────────────────────────────────────────────────────────────

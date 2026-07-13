@@ -1,0 +1,11 @@
+{
+  "name": "conflict_detector",
+  "description": "检测同属性多来源的矛盾声明",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "records": { "type": "array", "items": { "type": "object" } }
+    },
+    "required": ["records"]
+  }
+}
