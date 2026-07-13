@@ -7,6 +7,8 @@ import type { RouteSuggestion } from "../../runtime/index.js";
 export type WorkflowLifecycleEvent =
   | { type: "node.executed";      nodeId: string; iteration: number; outputKeys: string[] }
   | { type: "route.required";     completedNode: string; suggestions: RouteSuggestion[] }
+  | { type: "clarification.required"; nodeId: string; round: number; questionType: string; agentPrompt: string }
+  | { type: "clarification.provided"; nodeId: string; round: number; userResponse: string; extractedDelta: Record<string, any> }
   | { type: "human.continued";    targetNode: string }
   | { type: "human.backjumped";   targetNode: string }
   | { type: "workflow.completed" }
@@ -16,6 +18,11 @@ export type WorkflowLifecycleEvent =
 export interface HumanDecision {
   targetNode: string;
   action: "continue" | "backjump";
+}
+
+export interface HumanClarification {
+  round: number;
+  userResponse: string;
 }
 
 /**
@@ -74,6 +81,15 @@ export function fold(
         },
       };
     }
+
+    case "clarification.required":
+      return state;
+
+    case "clarification.provided":
+      return {
+        ...state,
+        data: { ...state.data, _userResponse: event.userResponse },
+      };
 
     case "human.continued":
       return {

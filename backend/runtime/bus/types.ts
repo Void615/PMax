@@ -9,7 +9,9 @@ export type UiHint =
   | "node_completed"
   | "workflow_complete"
   | "workflow_failed"
-  | "degradation_notice";
+  | "degradation_notice"
+  | "clarification_asked"
+  | "quality_warning";
 
 export interface WorkflowEvent {
   traceId: string;

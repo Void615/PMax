@@ -69,6 +69,40 @@ export interface AnalysisConstraints {
 }
 
 /**
+ * 单轮澄清的定义。每种 analysisType 有一组 ROUND_DEFS。
+ * 所有轮次必填。
+ */
+export interface ClarificationRoundDef {
+  questionType: "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
+}
+
+/**
+ * 单轮澄清对话记录，用于多轮对话的完整溯源。
+ */
+export interface ClarificationRound {
+  round: number;
+  questionType: "scene_selection" | "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
+  agentPrompt: string;
+  userResponse: string;
+  extractedDelta: Record<string, any>;
+  timestamp: string;
+}
+
+/**
+ * 每种分析场景的澄清轮次序列。
+ * Round 1 (scene_selection) 是固定入口，不在表内。
+ */
+export const ROUND_DEFS: Record<string, ClarificationRoundDef[]> = {
+  product_comparison: [
+    { questionType: "targets" },
+    { questionType: "dimensions" },
+    { questionType: "output_format" },
+    { questionType: "constraints" },
+    { questionType: "confirm_preview" },
+  ],
+};
+
+/**
  * 需求解析的完整产出。写入 `state.data.config`，是所有下游 Capability 的输入契约。
  *
  * @field analysisType - 分析场景类型（Phase 2 固定为 "product_comparison"）
@@ -85,6 +119,7 @@ export interface RequirementConfig {
   outputFormat: OutputFormat[];
   constraints: AnalysisConstraints;
   userInput: string;
+  clarificationHistory: ClarificationRound[];
 }
 
 // ─────────────────────────────────────────────────────────────
