@@ -151,6 +151,9 @@ export function createRequirementParsingCap(
           },
         });
 
+        rp.roundDefs = ROUND_DEFS[analysisType] ?? ROUND_DEFS.product_comparison;
+        rp.phase = "clarification_loop";
+
         return { patch: { _rpState: rp, _userResponse: null }, artifacts: [] };
       }
 
@@ -362,25 +365,17 @@ export function createRequirementParsingCap(
         const fmts = rp.partialConfig.outputFormat ?? [];
         const constraints = rp.partialConfig.constraints ?? {};
 
-        const display: Record<string, string> = {
-          分析场景: rp.partialConfig.analysisType === "product_comparison"
-            ? "产品横向对比" : (rp.partialConfig.analysisType ?? ""),
-          竞品列表: targets.map((t: any) => t.name ?? t).join("、"),
-          对比维度: dims.join("、"),
-          产物格式: fmts.join("、"),
-          约束条件: Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : "无",
-        };
-
-        const previewText = Object.entries(display)
-          .map(([k, v]) => `- **${k}**：${v}`)
-          .join("\n");
-
         // First time entering confirming → emit clarification_asked
         if (!rp.pendingQuestionType || rp.pendingQuestionType !== "confirm_preview") {
           rp.pendingQuestionType = "confirm_preview";
           const displayRound = rp.history.length + 1;
 
-          const agentPrompt = `请确认以下分析配置：\n\n${previewText}\n\n确认无误请回复"确认"，需要修改请说明修改内容。`;
+          const agentPrompt = CONFIG_PREVIEW_PROMPT
+            .replace("{analysisType}", rp.partialConfig.analysisType === "product_comparison" ? "产品横向对比" : (rp.partialConfig.analysisType ?? ""))
+            .replace("{targets}", targets.map((t: any) => t.name ?? t).join("、"))
+            .replace("{dimensions}", dims.join("、"))
+            .replace("{outputFormat}", fmts.join("、"))
+            .replace("{constraints}", Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : "无");
 
           rp.history.push({
             round: displayRound,
@@ -447,6 +442,7 @@ export function createRequirementParsingCap(
             return { patch: { config, _rpState: null, _userResponse: null }, artifacts: [] };
           } else {
             // User wants to modify → back to targets (ROUND_DEFS index 0)
+            rp.history = rp.history.slice(0, 1); // keep only scene_selection
             rp.phase = "clarification_loop";
             rp.roundIndex = 0;
             rp.pendingQuestionType = undefined;

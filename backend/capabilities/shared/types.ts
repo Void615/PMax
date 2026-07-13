@@ -73,7 +73,7 @@ export interface AnalysisConstraints {
  * 所有轮次必填。
  */
 export interface ClarificationRoundDef {
-  questionType: "targets" | "dimensions" | "output_format" | "constraints" | "confirm_preview";
+  questionType: "targets" | "dimensions" | "output_format" | "constraints";
 }
 
 /**
@@ -98,7 +98,6 @@ export const ROUND_DEFS: Record<string, ClarificationRoundDef[]> = {
     { questionType: "dimensions" },
     { questionType: "output_format" },
     { questionType: "constraints" },
-    { questionType: "confirm_preview" },
   ],
 };
 
