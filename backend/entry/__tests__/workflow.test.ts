@@ -92,13 +92,28 @@ function createMockLlm() {
       if (prompt.includes("对比维度统计")) {
         return JSON.stringify({ suggestions: [] });
       }
-      if (prompt.includes("数据提取器")) {
+      // ── Information processing: tools ──
+      if (prompt.includes("价格归一化工具")) {
         return JSON.stringify({
           records: [
-            { attribute: "去广告", value: "支持", confidence: 0.9 },
-            { attribute: "月费价格", value: "15元/月", confidence: 0.85 },
+            { attribute: "月费价格", value: "15元/月", rawValue: "15元/月", confidence: 0.85 },
+            { attribute: "年费价格", value: "120元/年", rawValue: "120元/年", confidence: 0.8 },
           ],
         });
+      }
+      if (prompt.includes("功能点提取工具")) {
+        return JSON.stringify({
+          records: [
+            { attribute: "去广告", value: "支持", rawValue: "支持", confidence: 0.9 },
+            { attribute: "高清视频", value: "支持", rawValue: "支持", confidence: 0.85 },
+          ],
+        });
+      }
+      if (prompt.includes("实体解析工具")) {
+        return JSON.stringify({ merged: [] });
+      }
+      if (prompt.includes("冲突检测工具")) {
+        return JSON.stringify({ records: [], conflicts: [] });
       }
       if (prompt.includes("竞品分析师")) {
         return JSON.stringify({
